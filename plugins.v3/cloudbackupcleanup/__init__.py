@@ -48,6 +48,7 @@ class CloudBackupCleanup(_PluginBase):
         self._state = {}
         self._once = False
         self._revision = 0
+        self._interval_trigger = None
 
     def init_plugin(self, config=None):
         self._stop.set()
@@ -66,6 +67,7 @@ class CloudBackupCleanup(_PluginBase):
             self._state.setdefault('hash_cache',{})
             self._revision += 1
             self._stop = threading.Event()
+            self._interval_trigger=IntervalTrigger(minutes=max(5,int(self._config['interval'])))
         finally:
             self._lock.release()
 
@@ -85,7 +87,7 @@ class CloudBackupCleanup(_PluginBase):
         services = []
         if self.get_state():
             services.append({'id':self.__class__.__name__+'.Check','name':'云端备份后清理巡检',
-                'trigger':IntervalTrigger(minutes=max(5,int(self._config['interval']))),'func':self.run,'kwargs':{}})
+                'trigger':self._interval_trigger,'func':self.run,'kwargs':{}})
         if self._once:
             services.append({'id':self.__class__.__name__+'.Once','name':'云端备份核查一次',
                 'trigger':DateTrigger(run_date=datetime.now(timezone.utc)+timedelta(seconds=3)),
@@ -180,7 +182,10 @@ class CloudBackupCleanup(_PluginBase):
             hr=NexusHr(config['absence_confirmed_sites'])
             interval=max(5,int(config['interval']))*60
             allowed_hashes={x.strip().lower() for x in str(config.get('hashes','')).splitlines() if x.strip()}
-            due=sorted(((key,j) for key,j in self._state['jobs'].items() if not j.get('completed_at') and (force or j.get('next_check',0)<=time.time())),key=lambda x:x[1].get('next_check',0))
+            # The scheduler is the timing authority. A per-job "now+interval"
+            # gate can fall a few seconds after the next tick and accidentally
+            # skip a whole cycle; rotate oldest-checked pending jobs instead.
+            due=sorted(((key,j) for key,j in self._state['jobs'].items() if not j.get('completed_at')),key=lambda x:x[1].get('checked_at',0))
             checked=0;handled=set()
             for key,job in due:
                 if run_stop.is_set() or checked>=max(1,min(50,int(config['batch_size']))):
@@ -222,6 +227,11 @@ class CloudBackupCleanup(_PluginBase):
                 except Exception as e:
                     job['status']='巡检失败：'+type(e).__name__
                 finally:
+                    next_fire=self._interval_trigger.get_next_fire_time(None,datetime.now(timezone.utc)+timedelta(milliseconds=1))
+                    if next_fire and self.get_state() and not job.get('completed_at'):
+                        job['next_check']=next_fire.timestamp()
+                    elif not self.get_state():
+                        job['next_check']=None
                     self._save()
             self._state['last_error']=''
             self._state['last_checked_count']=checked
@@ -266,7 +276,7 @@ class CloudBackupCleanup(_PluginBase):
             hr_items=job.get('inspection',{}).get('hr',[])
             cells=[{'component':'td','text':label(x)} for x in (
                 job['title'],job['hash'][:12],job.get('group_count',len(hr_items) or '—'),job.get('status','等待巡检'),
-                datetime.fromtimestamp(when).strftime('%m-%d %H:%M') if when and not job.get('completed_at') else '—')]
+                datetime.fromtimestamp(when).strftime('%m-%d %H:%M') if when and self.get_state() and not job.get('completed_at') else '—')]
             details=[]
             for item in hr_items:
                 name=(item.get('site') or '来源未知')+' · '+item.get('owner','').rsplit(':',1)[-1][:8]
@@ -282,6 +292,6 @@ class CloudBackupCleanup(_PluginBase):
         if snapshot.get('last_error'):
             result.append({'component':'VAlert','props':{'type':'error','text':label(snapshot['last_error'])}})
         result.append({'component':'VTable','content':[
-            {'component':'thead','content':[{'component':'tr','content':[{'component':'th','text':x} for x in ('资源','种子','关联数','当前状态','下次检查','最近HR核验')]}]},
+            {'component':'thead','content':[{'component':'tr','content':[{'component':'th','text':x} for x in ('资源','种子','关联数','当前状态','预计复查','最近HR核验')]}]},
             {'component':'tbody','content':rows}]})
         return result

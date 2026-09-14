@@ -1,4 +1,5 @@
 import copy,importlib.util,importlib.machinery,pathlib,sys,threading,types,unittest
+from datetime import timedelta
 from unittest.mock import patch
 ROOT=pathlib.Path(__file__).resolve().parents[3]
 package=types.ModuleType('cloudbackupcleanup');package.__path__=[str(ROOT/'plugins.v3'/'cloudbackupcleanup')]
@@ -20,7 +21,7 @@ def load_entry():
     modules['app.sdk.logging'].logger=types.SimpleNamespace(info=lambda *a:None)
     modules['app.sdk.queries'].list_transfer_history=lambda **kw:None
     modules['apscheduler.triggers.date'].DateTrigger=lambda **kw:kw
-    modules['apscheduler.triggers.interval'].IntervalTrigger=lambda **kw:kw
+    modules['apscheduler.triggers.interval'].IntervalTrigger=lambda **kw:types.SimpleNamespace(get_next_fire_time=lambda previous,now:now+timedelta(minutes=kw['minutes']))
     name='cloudbackupcleanup.lifecycle_fixture'
     loader=importlib.machinery.SourceFileLoader(name,str(ROOT/'plugins.v3'/'cloudbackupcleanup'/'__init__.py'))
     spec=importlib.util.spec_from_loader(name,loader,is_package=False)
@@ -65,6 +66,15 @@ class LifecycleTests(unittest.TestCase):
         self.plugin.stop_service()
         with patch.object(self.entry,'from_mp') as clients:
             job['func'](**job['func_kwargs']);clients.assert_not_called()
+    def test_periodic_tick_is_not_skipped_by_job_deadline_jitter(self):
+        import time
+        self.plugin.saved['state']={'jobs':{'test':{'hash':'hash','title':'test','next_check':time.time()+1800}},'hash_cache':{}}
+        self.plugin.init_plugin({'enabled':True})
+        clients={'test':types.SimpleNamespace(tasks=lambda:[])}
+        with patch.object(self.entry,'from_mp',return_value=clients),patch.object(self.entry,'plan_group',return_value={'ready':False,'reason':'等待上传'}) as planner:
+            self.plugin.run(generation=self.plugin._revision)
+            planner.assert_called_once()
+        self.assertEqual(self.plugin._state['last_checked_count'],1)
 
 
 if __name__=='__main__':unittest.main()
