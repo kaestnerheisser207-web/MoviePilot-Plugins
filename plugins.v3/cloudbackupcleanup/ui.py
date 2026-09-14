@@ -87,6 +87,8 @@ def fact(label,value):
 
 def page(snapshot,config,next_check,index_available,site_names):
     jobs=snapshot.get('jobs',{})
+    scope={h.strip().lower() for h in str(config.get('hashes') or '').splitlines() if h.strip()}
+    if scope:jobs={k:j for k,j in jobs.items() if str(j.get('hash') or '').lower() in scope}
     summary=[chip('自动清理' if config.get('auto_delete') else '只读核查','warning' if config.get('auto_delete') else 'primary'),
         chip(f'{len(jobs)} 个资源'),chip('CMS 已接入' if index_available else 'CMS 未接入','success' if index_available else 'warning'),
         chip('巡检中' if snapshot.get('running') else ('周期巡检已启用' if config.get('enabled') else '周期巡检已关闭'))]

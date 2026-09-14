@@ -82,6 +82,14 @@ class LifecycleTests(unittest.TestCase):
         self.plugin.init_plugin({})
         with self.assertRaisesRegex(self.entry.ProbeError,'旧清理计划'):
             self.plugin._refresh_hr({'owners':[]},{},threading.Event())
+    def test_page_shows_current_scope_without_erasing_old_audit_data(self):
+        import json
+        self.plugin.init_plugin({'hashes':'recent','sites':[]})
+        state={'jobs':{'old':{'hash':'old','title':'旧资源'},'recent':{'hash':'recent','title':'近期资源'}}}
+        self.plugin.save_data('state',state)
+        page=json.dumps(self.plugin.get_page(),ensure_ascii=False)
+        self.assertIn('近期资源',page);self.assertNotIn('旧资源',page)
+        self.assertEqual(self.plugin.get_data('state'),state)
     def test_download_event_captures_only_source_without_hash_lock_or_network(self):
         self.plugin.init_plugin({'enabled':True});h='a'*40
         event=types.SimpleNamespace(event_data={'hash':h,'downloader':'tr','context':types.SimpleNamespace(torrent_info=types.SimpleNamespace(page_url='https://site.test/details.php?id=123&hit=1&passkey=discard'))})
