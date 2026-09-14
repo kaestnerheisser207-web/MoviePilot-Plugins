@@ -99,6 +99,12 @@ class MediaFixture:
 
 
 class PlanningTests(MediaFixture,unittest.TestCase):
+    def test_site_hr_timing_evidence_survives_planning(self):
+        self.hr=types.SimpleNamespace(check=lambda url:hr.HrResult('incomplete','checked',1,259200,3,259197,2000000,'20 days'))
+        result=self.plan()
+        self.assertFalse(result['ready'])
+        self.assertEqual(result['hr'][0]['remaining_seed_seconds'],259197)
+        self.assertEqual(result['hr'][0]['deadline_at'],2000000)
     def test_valid_plan_does_not_delete_files(self):
         result=self.plan();self.assertTrue(result['ready']);self.assertEqual(self.hr_calls,1)
         self.assertTrue(self.src.exists());self.assertTrue(self.dst.exists())

@@ -4,7 +4,9 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from decimal import Decimal, InvalidOperation
+from email.utils import parsedate_to_datetime
 from bs4 import BeautifulSoup
 from .cloud import ProbeError
 
@@ -14,6 +16,76 @@ class HrResult:
     state: str  # complete, no_hr, incomplete, unknown
     reason: str
     checked_at: float
+    required_seed_seconds: int | None = None
+    seeded_seconds: int | None = None
+    remaining_seed_seconds: int | None = None
+    deadline_at: float | None = None
+    deadline_text: str = ''
+
+
+def chd_duration(value):
+    """CHDBits uses [days天][hours:]minutes:seconds, not hours:minutes."""
+    value=re.sub(r'\s+','',value)
+    if value=='0':return 0
+    match=re.fullmatch(r'(?:(\d+)天)?(?:(\d+(?::\d{1,2}){1,2}))?',value)
+    if not match or not any(match.groups()):
+        raise ProbeError('彩虹岛 HR 时间格式无法确认')
+    days=int(match[1] or 0);clock=match[2]
+    if not clock:return days*86400
+    parts=[int(x) for x in clock.split(':')]
+    if len(parts)==2:
+        minutes,seconds=parts;hours=0
+    else:
+        hours,minutes,seconds=parts
+        if minutes>=60:raise ProbeError('彩虹岛 HR 时间字段无效')
+    if seconds>=60 or (days and hours>=24):
+        raise ProbeError('彩虹岛 HR 时间字段无效')
+    return days*86400+hours*3600+minutes*60+seconds
+
+
+def parse_chd_page(html,wanted_id,observed_at):
+    """Read the authenticated personal hnr.php table, matching torrent id."""
+    soup=BeautifulSoup(html,'html.parser')
+    if soup.select('input[type=password]'):raise ProbeError('站点会话已失效')
+    required=('标题','H&R百分比','剩余时间','H&R周期','做种时间','完成时间')
+    tables=[]
+    for table in soup.find_all('table'):
+        headers=[x.get_text(' ',strip=True) for x in table.select('th,td.colhead')]
+        if all(h in headers for h in required):tables.append((table,headers))
+    results=[]
+    if not tables:
+        if 'No Hit And Runs' not in soup.get_text(' ',strip=True):
+            raise ProbeError('彩虹岛个人 HR 页面结构尚未适配')
+    else:
+        table,headers=min(tables,key=lambda t:len(str(t[0])))
+        for row in table.find_all('tr'):
+            if not any(urllib.parse.urlparse(a.get('href','')).path.rsplit('/',1)[-1]=='details.php' and torrent_id(a.get('href',''))==wanted_id for a in row.find_all('a')):
+                continue
+            cells=row.find_all(['td','th'],recursive=False)
+            if len(cells)!=len(headers):raise ProbeError('彩虹岛 HR 记录列数不完整')
+            values={h:cell.get_text(' ',strip=True) for h,cell in zip(headers,cells)}
+            try:
+                percent_text=values['H&R百分比'].strip()
+                if not re.fullmatch(r'\d+(?:\.\d+)?%',percent_text):raise ValueError()
+                percent=Decimal(percent_text[:-1])
+                if not 0<=percent<=100:raise ValueError()
+            except (InvalidOperation,ValueError):raise ProbeError('彩虹岛 HR 百分比无效') from None
+            required_seconds=chd_duration(values['H&R周期'])
+            seeded=chd_duration(values['做种时间'])
+            remaining_window=chd_duration(values['剩余时间'])
+            if required_seconds<=0:raise ProbeError('彩虹岛 HR 做种要求无效')
+            complete=percent==100 and seeded>=required_seconds
+            results.append(HrResult('complete' if complete else 'incomplete',
+                '彩虹岛个人 HR 表显示已达标' if complete else '彩虹岛个人 HR 表显示未达标（'+percent_text+'）',
+                observed_at,required_seconds,seeded,max(0,required_seconds-seeded),
+                observed_at+remaining_window,'站点剩余 '+values['剩余时间']+'；截止时间按站点倒计时估算'))
+    links=[]
+    for a in soup.find_all('a',href=True):
+        u=urllib.parse.urlparse(a['href']);q=urllib.parse.parse_qs(u.query)
+        if (not u.path or u.path.rsplit('/',1)[-1]=='hnr.php') and 'page' in q:
+            if not all(x.isdigit() for x in q['page']):raise ProbeError('彩虹岛 HR 分页参数无效')
+            links.append(a['href'])
+    return results,links
 
 
 def torrent_id(url):
@@ -71,6 +143,7 @@ class NexusHr:
         self.timeout = timeout
         self.max_pages = max_pages
         self.cache = {}
+        self.response_times = {}
 
     def check(self, source_url):
         now = time.time()
@@ -98,7 +171,7 @@ class NexusHr:
                     return None
             proxy = settings.PROXY if site.proxy else {}
             opener = urllib.request.build_opener(NoRedirect(), urllib.request.ProxyHandler(proxy or {}))
-            headers = {'Cookie': site.cookie, 'User-Agent': site.ua or 'Mozilla/5.0'}
+            headers = {'Cookie': str(site.cookie).strip(), 'User-Agent': site.ua or 'Mozilla/5.0','Cache-Control':'no-cache'}
             def fetch(url):
                 target = urllib.parse.urlparse(url)
                 origin=lambda u:(u.scheme,(u.hostname or '').lower(),u.port or (443 if u.scheme=='https' else 80))
@@ -108,13 +181,39 @@ class NexusHr:
                     req = urllib.request.Request(url, headers=headers)
                     with opener.open(req, timeout=self.timeout) as response:
                         raw = response.read(4*1024*1024+1)
+                        observed_at=time.time()
+                        server_date=getattr(response,'headers',{}).get('Date')
+                        if server_date:
+                            try:observed_at=parsedate_to_datetime(server_date).timestamp()
+                            except (TypeError,ValueError,OverflowError):pass
                     if len(raw) > 4*1024*1024:
                         raise ProbeError('HR 页面过大，无法确认完整记录')
                     self.cache[url] = raw.decode('utf-8', errors='replace')
+                    self.response_times[url]=observed_at
                 return self.cache[url]
             detail = BeautifulSoup(fetch(source_url), 'html.parser')
             if detail.select('input[type=password]'):
                 raise ProbeError('站点会话已失效')
+            if host=='ptchdbits.co':
+                link=next((a.get('href') for a in detail.find_all('a') if urllib.parse.urlparse(a.get('href','')).path.rsplit('/',1)[-1]=='hnr.php'),None)
+                if not link:raise ProbeError('彩虹岛未提供个人 HR 入口')
+                start=urllib.parse.urljoin(source_url,link)
+                account=urllib.parse.parse_qs(urllib.parse.urlparse(start).query).get('id')
+                if not account or len(account)!=1 or not account[0].isdigit():raise ProbeError('彩虹岛 HR 账户定位无效')
+                queue=[start];visited=set();results=[]
+                while queue:
+                    url=queue.pop(0)
+                    if url in visited:continue
+                    if len(visited)>=self.max_pages:raise ProbeError('HR 分页超过巡检上限，未完成完整核对')
+                    if urllib.parse.parse_qs(urllib.parse.urlparse(url).query).get('id')!=account:raise ProbeError('彩虹岛 HR 分页账户发生变化')
+                    visited.add(url)
+                    html=fetch(url)
+                    found,links=parse_chd_page(html,torrent_id(source_url),self.response_times[url])
+                    results.extend(found)
+                    queue.extend(urllib.parse.urljoin(url,href) for href in links)
+                if results:
+                    return replace(next((r for r in results if r.state=='incomplete'),results[0]),checked_at=now)
+                return HrResult('unknown','彩虹岛个人 HR 表未找到该种子，不能据此认定无 HR 或已达标',now)
             link = next((a.get('href') for a in detail.find_all('a')
                          if urllib.parse.urlparse(a.get('href','')).path.rstrip('/').endswith('myhr.php')), None)
             if not link:

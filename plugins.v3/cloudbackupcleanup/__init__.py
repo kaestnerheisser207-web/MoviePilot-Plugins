@@ -33,7 +33,7 @@ class CloudBackupCleanup(_PluginBase):
     plugin_name = '云端备份后清理'
     plugin_desc = '定期核验115备份、CMS同步及HR状态，默认只读核查。'
     plugin_icon = 'CloudDrive_A.png'
-    plugin_version = '0.1.3'
+    plugin_version = '0.2.0'
     plugin_author = 'kaestnerheisser207-web'
     author_url = 'https://github.com/kaestnerheisser207-web'
     plugin_config_prefix = 'cloudbackupcleanup_'
@@ -293,7 +293,14 @@ class CloudBackupCleanup(_PluginBase):
             for item in hr_items:
                 name=(item.get('site') or '来源未知')+' · '+item.get('owner','').rsplit(':',1)[-1][:8]
                 stamp=datetime.fromtimestamp(item['checked_at']).strftime('%m-%d %H:%M') if item.get('checked_at') else ''
-                details.append({'component':'li','text':label(name+'：'+item.get('reason','')+' '+stamp)})
+                timing=''
+                remaining=item.get('remaining_seed_seconds')
+                if remaining is not None:
+                    hours,rest=divmod(max(0,int(remaining)),3600);minutes,seconds=divmod(rest,60)
+                    timing+=f'；还需做种 {hours}小时{minutes}分{seconds}秒'
+                if item.get('deadline_at'):
+                    timing+='；预计截止 '+datetime.fromtimestamp(item['deadline_at']).strftime('%m-%d %H:%M:%S')+'（站点倒计时）'
+                details.append({'component':'li','text':label(name+'：'+item.get('reason','')+timing+' '+stamp)})
             cells.append({'component':'td','content':[{'component':'ul','content':details}]} if details else {'component':'td','text':'尚未检查'})
             rows.append({'component':'tr','content':cells})
         mode='自动清理' if self._config.get('auto_delete') else '只读核查'

@@ -124,7 +124,11 @@ def plan_group(seed_hash, tasks, clients, find_transfers, cloud_factory, cms, hr
         result = hr.check(source_url)
         try:site=urllib.parse.urlparse(source_url).hostname or ''
         except ValueError:site=''
-        clearances.append({'owner':owner(task),'site':site,'state':result.state,'reason':result.reason,'checked_at':result.checked_at})
+        clearance={'owner':owner(task),'site':site,'state':result.state,'reason':result.reason,'checked_at':result.checked_at}
+        for key in ('required_seed_seconds','seeded_seconds','remaining_seed_seconds','deadline_at','deadline_text'):
+            value=getattr(result,key,None)
+            if value is not None and value!='':clearance[key]=value
+        clearances.append(clearance)
     if any(c['state']=='incomplete' for c in clearances):
         return {'ready':False,'reason':'等待 HR：关联种子尚未全部达标','hr':clearances,'cloud_verified_at':verified_at,'evidence':evidence}
     if any(c['state'] not in ALLOWED_HR for c in clearances):

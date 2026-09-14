@@ -26,6 +26,7 @@ class HrProviderTests(unittest.TestCase):
             'https://site.test/myhr.php?status=pending':EMPTY,
         }
         self.requests=[]
+        self.request_headers=[]
         outer=self
         class Response:
             def __init__(self,raw):self.raw=raw
@@ -35,10 +36,12 @@ class HrProviderTests(unittest.TestCase):
         class Opener:
             def open(self,request,timeout):
                 outer.requests.append(request.full_url)
+                outer.request_headers.append(dict(request.header_items()))
                 value=outer.pages[request.full_url]
                 if isinstance(value,Exception):raise value
                 return Response(value)
         site=types.SimpleNamespace(is_active=True,cookie='test-only-cookie',domain='site.test',url='https://site.test',proxy=False,ua='test')
+        self.site=site
         sites=types.ModuleType('app.db.oper.site');sites.SiteOper=lambda:types.SimpleNamespace(get_by_domain=lambda host:site)
         config=types.ModuleType('app.sdk.config');config.settings=types.SimpleNamespace(PROXY={})
         self.stack=contextlib.ExitStack()
@@ -47,6 +50,11 @@ class HrProviderTests(unittest.TestCase):
     def tearDown(self):self.stack.close()
     def check(self,allowed=(),limit=10):return hr.NexusHr(allowed,max_pages=limit).check('https://site.test/details.php?id=123')
     def test_absence_defaults_to_unknown(self):self.assertEqual(self.check().state,'unknown')
+    def test_cookie_trailing_newline_is_trimmed_at_request_boundary(self):
+        self.site.cookie='test-only-cookie\n'
+        self.check()
+        self.assertTrue(self.request_headers)
+        self.assertTrue(all(h['Cookie']=='test-only-cookie' for h in self.request_headers))
     def test_complete_page_confirms_clearance(self):
         self.pages['https://site.test/myhr.php?status=done']=ROW
         self.assertEqual(self.check().state,'complete')
