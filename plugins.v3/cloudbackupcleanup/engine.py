@@ -3,6 +3,7 @@ import time
 import urllib.parse
 from pathlib import Path, PurePosixPath
 from .cloud import ProbeError
+from .roles import ROLE_POLICY, partition
 from .files import identity, same_content_identity, sha1_file, unlink_verified
 
 VIDEO = {'.mkv','.mp4','.m4v','.avi','.ts','.m2ts','.mov','.wmv','.mpg','.mpeg','.iso','.flv','.webm'}
@@ -35,7 +36,8 @@ def check_delete_observer(paths, config):
 
 
 def check_scope(plan, allowed_hashes):
-    if allowed_hashes and any(x['hash'].lower() not in allowed_hashes for x in plan.get('owners',[])):
+    targets=plan.get('originals',[]) if plan.get('role_policy')==ROLE_POLICY else plan.get('owners',[])
+    if allowed_hashes and any(x['hash'].lower() not in allowed_hashes for x in targets):
         raise ProbeError('关联种子超出限定 hash 范围，已保留；需明确扩大范围后再清理')
 
 
@@ -71,13 +73,21 @@ def cloud_path(local, mappings):
     return str(PurePosixPath(mapping['cloud']) / relative.as_posix()), str(PurePosixPath(mapping.get('cd2_source') or mapping['local']) / relative.as_posix())
 
 
-def plan_group(seed_hash, tasks, clients, find_transfers, cloud_factory, cms, hr, config, cache, stop, source_lookup=None):
+def plan_group(seed_hash, tasks, clients, find_transfers, cloud_factory, cms, hr, config, cache, stop, source_lookup=None, role_lookup=None):
     group = group_for(tasks, seed_hash)
     if not group:
         raise ProbeError('下载器中没有该任务；不会依据旧历史删除文件')
     if not all(t.complete for t in group):
         raise ProbeError('等待下载：关联种子尚未全部完成')
-    wanted = sorted({p for t in group for p in t.wanted if Path(p).suffix.lower() in VIDEO})
+    roles=partition(group,role_lookup) if role_lookup else None
+    originals={x['client']+':'+x['hash'] for x in roles['original']} if roles else {owner(t) for t in group}
+    if roles and not any(t.hash==seed_hash and owner(t) in originals for t in group):
+        raise ProbeError('当前任务不是已确认的原始下载种子，保留并等待来源核验')
+    wanted = sorted({p for t in group if owner(t) in originals for p in t.wanted if Path(p).suffix.lower() in VIDEO})
+    if roles and any(set(t.wanted)-set(wanted) for t in group if owner(t) not in originals):
+        raise ProbeError('辅种包含原始下载范围之外的文件，不能联动移除')
+    role_data={'role_policy':ROLE_POLICY,'originals':roles['original'],'auxiliaries':roles['auxiliary'],
+               'unknown_owners':roles['unknown']} if roles else {}
     if not wanted:
         raise ProbeError('没有可核验的视频文件')
     paths = {}; evidence = []; logical_paths = []
@@ -128,24 +138,49 @@ def plan_group(seed_hash, tasks, clients, find_transfers, cloud_factory, cms, hr
     clearances = []
     verified_at = time.time()
     for task in group:
+        if owner(task) not in originals:continue
         if stop.is_set():
             raise ProbeError('巡检已停止')
         source_url=source_lookup(task) if source_lookup else clients[task.client].source(task)
         result = hr.check(source_url)
-        clearances.append(hr_clearance(owner(task),source_url,result))
+        clearances.append({**hr_clearance(owner(task),source_url,result),'role':'original'})
     if any(c['state'] in ('incomplete','overdue') for c in clearances):
-        reason='HR 已逾期但未达标，继续保留' if any(c['state']=='overdue' for c in clearances) else '等待 HR：关联种子尚未全部达标'
-        return {'ready':False,'reason':reason,'hr':clearances,'cloud_verified_at':verified_at,'evidence':evidence}
+        reason='HR 已逾期但未达标，继续保留' if any(c['state']=='overdue' for c in clearances) else '等待 HR：原始下载种子尚未达标'
+        return {**role_data,'ready':False,'reason':reason,'hr':clearances,'cloud_verified_at':verified_at,'evidence':evidence}
     if any(c['state'] not in ALLOWED_HR for c in clearances):
-        return {'ready':False,'reason':'HR 无法确认：'+next(c['reason'] for c in clearances if c['state'] not in ALLOWED_HR),'hr':clearances,'cloud_verified_at':verified_at,'evidence':evidence}
-    return {'ready':True,'reason':'备份、CMS与HR均已核验','owners':[{'client':t.client,'hash':t.hash,'generation':t.generation,'wanted':list(t.wanted)} for t in group],
+        return {**role_data,'ready':False,'reason':'HR 无法确认：'+next(c['reason'] for c in clearances if c['state'] not in ALLOWED_HR),'hr':clearances,'cloud_verified_at':verified_at,'evidence':evidence}
+    if roles and roles['unknown']:
+        return {**role_data,'ready':False,'reason':'原始下载 HR 已通过，但关联任务身份未知，暂不清理',
+                'hr':clearances,'cloud_verified_at':verified_at,'evidence':evidence}
+    # Auxiliary checks are deferred until the original download clears HR.
+    # A cross-seed label is provenance, never a personal HR exemption.
+    if roles:
+        for task in group:
+            if owner(task) in originals:continue
+            if stop.is_set():raise ProbeError('巡检已停止')
+            source_url=source_lookup(task) if source_lookup else clients[task.client].source(task)
+            result=hr.check(source_url)
+            clearances.append({**hr_clearance(owner(task),source_url,result),'role':'auxiliary'})
+        blocked=next((c for c in clearances if c['state'] not in ALLOWED_HR),None)
+        if blocked:
+            return {**role_data,'ready':False,'reason':'原始下载 HR 已通过；辅种个人 HR '+
+                    ('未达标，继续保留' if blocked['state'] in ('incomplete','overdue') else '尚未确认，继续保留'),
+                    'hr':clearances,'cloud_verified_at':verified_at,'evidence':evidence}
+    return {**role_data,'ready':True,'reason':'备份、CMS与原始下载HR均已核验','owners':[{'client':t.client,'hash':t.hash,'generation':t.generation,'wanted':list(t.wanted)} for t in group],
         'paths':paths,'evidence':evidence,'logical_paths':logical_paths,'hr':clearances,
         'cloud_verified_at':verified_at,'created_at':time.time(),
         'video_bytes':sum(identity(p,roots)['size'] for p in wanted)}
 
 
-def check_shared(plan, tasks):
+def check_shared(plan, tasks, role_lookup=None):
     expected = {x['client']+':'+x['hash'] for x in plan['owners']}
+    if plan.get('role_policy')==ROLE_POLICY:
+        if role_lookup is None:raise ProbeError('缺少任务角色复核，继续保留')
+        proofs={x['client']+':'+x['hash']:x for x in plan['originals']+plan['auxiliaries']}
+        if set(proofs)!=expected:raise ProbeError('原始下载与辅种身份不完整')
+        for task in tasks:
+            if owner(task) in expected and role_lookup(task).get('role')!=proofs[owner(task)]['role']:
+                raise ProbeError('关联任务角色发生变化，继续保留')
     paths = set(plan['paths'])
     for task in tasks:
         if owner(task) not in expected and paths.intersection(task.files):
@@ -158,7 +193,7 @@ def check_shared(plan, tasks):
                 raise ProbeError('种子任务的完成度或文件选择发生变化')
 
 
-def execute_plan(plan, journal, clients, load_tasks, verify_cloud, roots, save, stop=None, allowed_hashes=None, verify_hr=None):
+def execute_plan(plan, journal, clients, load_tasks, verify_cloud, roots, save, stop=None, allowed_hashes=None, verify_hr=None, role_lookup=None):
     """Resume a persisted plan. No generic retry of an uncertain delete request."""
     if not plan.get('ready') or not plan.get('hr') or any(c.get('state') not in ALLOWED_HR for c in plan['hr']):
         raise ProbeError('没有完整的 HR 放行证据')
@@ -172,7 +207,7 @@ def execute_plan(plan, journal, clients, load_tasks, verify_cloud, roots, save, 
             raise ProbeError('巡检已停止，未完成的清理将保留记录')
     check_stop();verify_cloud(plan);check_stop();verify_hr(plan);check_stop()
     tasks = load_tasks()
-    check_shared(plan,tasks)
+    check_shared(plan,tasks,role_lookup)
     for path, expected in plan['paths'].items():
         if Path(path).exists() or Path(path).is_symlink():
             if not same_content_identity(identity(path,roots),expected):
@@ -193,17 +228,17 @@ def execute_plan(plan, journal, clients, load_tasks, verify_cloud, roots, save, 
             raise ProbeError('上次删除结果未确认且任务仍存在，需要检查后人工重试')
         # Site evidence is refreshed for every mutation, including resumed runs.
         verify_cloud(plan);check_stop();verify_hr(plan);check_stop()
-        tasks=load_tasks();check_shared(plan,tasks)
+        tasks=load_tasks();check_shared(plan,tasks,role_lookup)
         if not any(owner(t)==key for t in tasks):
             raise ProbeError('任务在复核期间被外部移除，需要重新核对')
         requested.append(key);save()
         clients[item['client']].remove_task_only(item['hash'])
         tasks = load_tasks()
-        check_shared(plan,tasks)
+        check_shared(plan,tasks,role_lookup)
         if any(owner(t)==key for t in tasks):
             raise ProbeError('下载器尚未确认任务移除，文件继续保留')
         removed.append(key);save()
-    tasks = load_tasks();check_shared(plan,tasks)
+    tasks = load_tasks();check_shared(plan,tasks,role_lookup)
     if any(owner(t) in {x['client']+':'+x['hash'] for x in plan['owners']} for t in tasks):
         raise ProbeError('关联任务仍然存在，文件继续保留')
     finished = journal.setdefault('files_removed',[])
@@ -211,10 +246,10 @@ def execute_plan(plan, journal, clients, load_tasks, verify_cloud, roots, save, 
         check_stop()
         # Recheck shared references immediately before each unlink. Directory
         # pinning and file identity validation happen in unlink_verified().
-        check_shared(plan,load_tasks())
+        check_shared(plan,load_tasks(),role_lookup)
         if path not in finished:
             verify_cloud(plan);check_stop();verify_hr(plan);check_stop()
-            check_shared(plan,load_tasks())
+            check_shared(plan,load_tasks(),role_lookup)
             unlink_verified(path,expected,roots)
             finished.append(path);save()
     journal['completed_at']=time.time();save()

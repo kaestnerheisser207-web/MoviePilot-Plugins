@@ -36,7 +36,7 @@ def form(site_options):
         col(field('sites','参与 HR 核验的站点','读取 MP 已配置站点；未勾选站点的关联种子继续保留。',
             component='VSelect',items=site_options,multiple=True,chips=True,**{'closable-chips':True,'clearable':True}),12),
         col(field('interval','巡检间隔（分钟）','最少 5 分钟',type='number',min=5),4),
-        col(field('batch_size','每轮核查组数','按共享文件归为一组',type='number',min=1),4),
+        col(field('batch_size','每轮核查组数','原始下载与占用文件的辅种归为一组',type='number',min=1),4),
         col(field('hash_mib_s','哈希读取上限（MiB/s）','限制本地文件读取速度',type='number',min=1),4)])
     storage=section('云端与媒体库','使用现有 CD2 和 CMS 连接，核验 115 文件与 STRM。',[
         col(field('cd2_url','CD2 地址',placeholder='http://192.168.x.x:19798')),
@@ -54,7 +54,7 @@ def form(site_options):
             node('VExpansionPanelText',content=[field('source_mappings','来源映射（JSON）',
                 '仅用于缺少下载来源的旧任务，不可手工指定 HR 达标状态。',component='VTextarea',rows=5)])])])
     return [node('VForm',content=[basic,storage,paths,advanced,
-        node('div','仅接受站点确认：无记录、查询失败或 HR 未达标时保留文件；共享文件的所有关联种子均须通过。',
+        node('div','仅接受站点确认：无记录、查询失败或 HR 未达标时保留文件；原始下载通过后，清理前再核验辅种个人 HR。',
              **{'class':'text-body-2 text-medium-emphasis mb-3'})])]
 
 
@@ -90,11 +90,17 @@ def page(snapshot,config,next_check,index_available,site_names):
         result.append(node('VAlert',snapshot['last_error'],type='error',variant='tonal',**{'class':'mb-4'}))
     if not jobs:result.append(node('div','尚无核查记录。配置完成后，可保存并巡检一次。',**{'class':'py-8 text-center text-medium-emphasis'}))
     for job in sorted(jobs.values(),key=lambda j:j.get('checked_at',0),reverse=True)[:200]:
-        inspection=job.get('inspection') or {};items=inspection.get('hr',[])
+        inspection=job.get('inspection') or {};all_items=inspection.get('hr',[])
+        items=[x for x in all_items if x.get('role','original')=='original']
+        auxiliary_items={x.get('owner'):x for x in all_items if x.get('role')=='auxiliary'}
         state,color=STATES.get(job.get('personal_hr_state'),STATES['unknown'])
         original='有 HR' if job.get('original_hit_and_run') is True else ('标记为无 HR' if job.get('original_hit_and_run') is False else '未知')
         remaining=[x['remaining_seed_seconds'] for x in items if x.get('remaining_seed_seconds') is not None]
-        facts=[fact('关联种子',str(job.get('group_count',len(items) or 1))+' 个 · 原始标记 '+original),
+        origins=inspection.get('originals',[]);auxiliaries=inspection.get('auxiliaries',[])
+        origin_names='、'.join(dict.fromkeys(x.get('site_name') or '来源待确认' for x in origins))
+        facts=[fact('原始下载',f'{len(origins)} 条 · {origin_names}' if origins else '来源待核验'),
+            fact('辅种任务',f'{len(auxiliaries)} 条 · 清理前核验个人 HR' if auxiliaries else '无已确认辅种'),
+            fact('原始种子标记',original),
             fact('最近检查',stamp(job.get('checked_at'))),
             fact('下次复查',stamp(next_check) if next_check and not job.get('completed_at') else '—')]
         if remaining:facts.append(fact('还需做种',duration(max(remaining))))
@@ -120,8 +126,20 @@ def page(snapshot,config,next_check,index_available,site_names):
             node('VRow',content=facts)]
         if details:
             content.append(node('VExpansionPanels',variant='accordion',**{'class':'mt-5'},content=[
-                node('VExpansionPanel',elevation=0,content=[node('VExpansionPanelTitle',f'站点核验详情 · {len(items)} 个种子'),
+                node('VExpansionPanel',elevation=0,content=[node('VExpansionPanelTitle',f'原始下载 HR 详情 · {len(items)} 条'),
                     node('VExpansionPanelText',content=details)])]))
         else:content.append(node('div','备份核验通过后显示个人 HR 结果',**{'class':'text-caption text-medium-emphasis mt-4'}))
+        if auxiliaries:
+            aux_details=[]
+            for auxiliary in auxiliaries:
+                key=auxiliary['client']+':'+auxiliary['hash'];hr=auxiliary_items.get(key)
+                text=(auxiliary.get('site_name') or '站点待识别')+' · '+auxiliary['hash'][:12]
+                aux_details.append(node('div',content=[node('div',text,**{'class':'text-body-2 font-weight-medium'}),
+                    node('div',(hr.get('reason') if hr else '等待原始下载通过；尚未查询个人 HR'),**{'class':'text-body-2 text-medium-emphasis mt-1'})],**{'class':'py-3'}))
+            content.append(node('VExpansionPanels',variant='accordion',**{'class':'mt-3'},content=[
+                node('VExpansionPanel',elevation=0,content=[node('VExpansionPanelTitle',f'辅种任务 · {len(auxiliaries)} 条'),
+                    node('VExpansionPanelText',content=aux_details)])]))
+        if inspection.get('unknown_owners'):
+            content.append(node('div',f"另有 {len(inspection['unknown_owners'])} 条关联任务身份待确认，清理暂缓",**{'class':'text-body-2 mt-3'}))
         result.append(node('VCard',variant='outlined',**{'class':'mb-4 rounded-lg'},content=[node('VCardText',content=content)]))
     return result

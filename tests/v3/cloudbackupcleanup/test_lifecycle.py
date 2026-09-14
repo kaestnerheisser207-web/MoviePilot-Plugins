@@ -24,6 +24,7 @@ def load_entry():
     modules['app.sdk.events'].eventmanager=types.SimpleNamespace(register=lambda event:lambda func:func)
     modules['app.schemas.types'].EventType=types.SimpleNamespace(DownloadAdded='DownloadAdded')
     modules['app.sdk.queries'].list_transfer_history=lambda **kw:None
+    modules['app.sdk.queries'].list_download_history=lambda **kw:types.SimpleNamespace(items=[],has_next=False)
     modules['apscheduler.triggers.date'].DateTrigger=lambda **kw:kw
     modules['apscheduler.triggers.interval'].IntervalTrigger=lambda **kw:types.SimpleNamespace(get_next_fire_time=lambda previous,now:now+timedelta(minutes=kw['minutes']))
     name='cloudbackupcleanup.lifecycle_fixture'
@@ -60,11 +61,27 @@ class LifecycleTests(unittest.TestCase):
     def test_fresh_revalidation_honors_current_site_selection(self):
         from cloudbackupcleanup.hr import HrResult
         h='a'*40;url='https://site.test/details.php?id=123'
-        plan={'owners':[{'client':'tr','hash':h}],'hr':[{'owner':'tr:'+h,'source_url':url}]}
+        plan={'role_policy':self.entry.ROLE_POLICY,'originals':[{'client':'tr','hash':h}], 'owners':[{'client':'tr','hash':h}],'hr':[{'owner':'tr:'+h,'source_url':url}]}
         self.plugin.init_plugin({'sites':[]})
         with patch.object(self.entry,'NexusHr',return_value=types.SimpleNamespace(check=lambda u:HrResult('unknown','unselected',10))) as provider:
             with self.assertRaises(self.entry.ProbeError):self.plugin._refresh_hr(plan,{},threading.Event())
         self.assertEqual(provider.call_args.kwargs['selected_sites'],[])
+    def test_auxiliary_hr_is_revalidated_before_deletion(self):
+        from cloudbackupcleanup.hr import HrResult
+        h='a'*40;a='b'*40;url='https://site.test/details.php?id=123'
+        original={'client':'tr','hash':h};auxiliary={'client':'tr','hash':a}
+        plan={'role_policy':self.entry.ROLE_POLICY,'originals':[original],'auxiliaries':[auxiliary],
+              'owners':[original,auxiliary],'hr':[{'owner':'tr:'+x,'source_url':url} for x in (h,a)]}
+        job={};self.plugin.init_plugin({'sites':[4]})
+        replies=iter([HrResult('complete','confirmed',10,basis='site_personal_view'),HrResult('incomplete','pending',10)])
+        with patch.object(self.entry,'NexusHr',return_value=types.SimpleNamespace(check=lambda u:next(replies))):
+            with self.assertRaisesRegex(self.entry.ProbeError,'复核未通过'):self.plugin._refresh_hr(plan,job,threading.Event())
+        self.assertEqual(job['personal_hr_state'],'complete')
+        self.assertEqual(job['inspection']['hr'][-1]['role'],'auxiliary')
+    def test_old_cleanup_plan_cannot_resume_under_new_role_policy(self):
+        self.plugin.init_plugin({})
+        with self.assertRaisesRegex(self.entry.ProbeError,'旧清理计划'):
+            self.plugin._refresh_hr({'owners':[]},{},threading.Event())
     def test_download_event_captures_only_source_without_hash_lock_or_network(self):
         self.plugin.init_plugin({'enabled':True});h='a'*40
         event=types.SimpleNamespace(event_data={'hash':h,'downloader':'tr','context':types.SimpleNamespace(torrent_info=types.SimpleNamespace(page_url='https://site.test/details.php?id=123&hit=1&passkey=discard'))})
@@ -106,7 +123,7 @@ class LifecycleTests(unittest.TestCase):
     def test_fresh_site_clearance_is_independent_of_original_hr_marker(self):
         from cloudbackupcleanup.hr import HrResult
         h='a'*40;url='https://site.test/details.php?id=123'
-        plan={'ready':True,'owners':[{'client':'tr','hash':h}],'hr':[{'owner':'tr:'+h,'state':'complete','source_url':url}]}
+        plan={'role_policy':self.entry.ROLE_POLICY,'originals':[{'client':'tr','hash':h}],'ready':True,'owners':[{'client':'tr','hash':h}],'hr':[{'owner':'tr:'+h,'state':'complete','source_url':url}]}
         job={'original_hit_and_run':True};self.plugin.init_plugin({})
         with patch.object(self.entry,'NexusHr',return_value=types.SimpleNamespace(check=lambda u:HrResult('complete','site confirmed',10,basis='site_personal_view'))):
             self.plugin._refresh_hr(plan,job,threading.Event())
@@ -114,7 +131,7 @@ class LifecycleTests(unittest.TestCase):
     def test_stale_clearance_and_later_recovery_preserve_journal(self):
         from cloudbackupcleanup.hr import HrResult
         h='a'*40;url='https://site.test/details.php?id=123'
-        plan={'ready':True,'owners':[{'client':'tr','hash':h}],'hr':[{'owner':'tr:'+h,'state':'complete','source_url':url}]}
+        plan={'role_policy':self.entry.ROLE_POLICY,'originals':[{'client':'tr','hash':h}],'ready':True,'owners':[{'client':'tr','hash':h}],'hr':[{'owner':'tr:'+h,'state':'complete','source_url':url}]}
         job={'journal':{'remove_requested':['tr:'+h]}};self.plugin.init_plugin({})
         with patch.object(self.entry,'NexusHr',return_value=types.SimpleNamespace(check=lambda u:HrResult('unknown','login expired',10))):
             with self.assertRaisesRegex(self.entry.ProbeError,'复核未通过'):self.plugin._refresh_hr(plan,job,threading.Event())
@@ -147,7 +164,7 @@ class LifecycleTests(unittest.TestCase):
         task=types.SimpleNamespace(client='tr',hash='test',generation=123,completed_at=123,wanted=['/video/test/a.mp4'])
         def history(**kw):
             return types.SimpleNamespace(items=[types.SimpleNamespace(title='manual test')] if kw['filters'].get('src')=='/video/test/a.mp4' else [])
-        with patch.object(self.entry,'list_transfer_history',side_effect=history):self.plugin._discover([task])
+        with patch.object(self.entry,'list_transfer_history',side_effect=history),patch.object(self.plugin,'_role_for',return_value={'role':'original'}):self.plugin._discover([task])
         self.assertEqual(self.plugin._state['jobs']['tr:test:123']['title'],'manual test')
     def test_page_uses_current_schedule_instead_of_saved_estimate(self):
         import json
