@@ -86,7 +86,7 @@ def fact(label,value):
 
 
 def page(snapshot,config,next_check,index_available,site_names):
-    jobs=snapshot.get('jobs',{})
+    jobs={k:j for k,j in snapshot.get('jobs',{}).items() if j.get('present_in_downloader',True) or j.get('completed_at')}
     scope={h.strip().lower() for h in str(config.get('hashes') or '').splitlines() if h.strip()}
     if scope:jobs={k:j for k,j in jobs.items() if str(j.get('hash') or '').lower() in scope}
     summary=[chip('自动清理' if config.get('auto_delete') else '只读核查','warning' if config.get('auto_delete') else 'primary'),

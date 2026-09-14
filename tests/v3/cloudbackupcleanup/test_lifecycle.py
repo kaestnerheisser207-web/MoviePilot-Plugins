@@ -90,6 +90,16 @@ class LifecycleTests(unittest.TestCase):
         page=json.dumps(self.plugin.get_page(),ensure_ascii=False)
         self.assertIn('近期资源',page);self.assertNotIn('旧资源',page)
         self.assertEqual(self.plugin.get_data('state'),state)
+    def test_removed_jobs_stop_polling_without_erasing_history(self):
+        self.plugin.init_plugin({})
+        self.plugin._state['jobs']={'old':{'client':'tr','hash':'old','generation':1,'title':'旧任务'},'new':{'client':'tr','hash':'new','generation':2,'title':'新任务'}}
+        self.plugin._sync_live_jobs([types.SimpleNamespace(client='tr',hash='new',generation=2)])
+        self.assertFalse(self.plugin._state['jobs']['old']['present_in_downloader'])
+        self.assertTrue(self.plugin._state['jobs']['new']['present_in_downloader'])
+        self.assertEqual(len(self.plugin._state['jobs']),2)
+        import json
+        rendered=json.dumps(self.plugin.get_page(),ensure_ascii=False)
+        self.assertNotIn('旧任务',rendered);self.assertIn('新任务',rendered)
     def test_download_event_captures_only_source_without_hash_lock_or_network(self):
         self.plugin.init_plugin({'enabled':True});h='a'*40
         event=types.SimpleNamespace(event_data={'hash':h,'downloader':'tr','context':types.SimpleNamespace(torrent_info=types.SimpleNamespace(page_url='https://site.test/details.php?id=123&hit=1&passkey=discard'))})
@@ -171,7 +181,7 @@ class LifecycleTests(unittest.TestCase):
         self.plugin.init_plugin({'enabled':True})
         task=types.SimpleNamespace(client='tr',hash='test',generation=123,completed_at=123,wanted=['/video/test/a.mp4'])
         def history(**kw):
-            return types.SimpleNamespace(items=[types.SimpleNamespace(title='manual test')] if kw['filters'].get('src')=='/video/test/a.mp4' else [])
+            return types.SimpleNamespace(items=[types.SimpleNamespace(title='manual test',dest='/video/movie/Test/a.mp4')] if kw['filters'].get('src')=='/video/test/a.mp4' else [])
         with patch.object(self.entry,'list_transfer_history',side_effect=history),patch.object(self.plugin,'_role_for',return_value={'role':'original'}):self.plugin._discover([task])
         self.assertEqual(self.plugin._state['jobs']['tr:test:123']['title'],'manual test')
     def test_page_uses_current_schedule_instead_of_saved_estimate(self):
@@ -219,9 +229,10 @@ class LifecycleTests(unittest.TestCase):
             job['func'](**job['func_kwargs']);clients.assert_not_called()
     def test_periodic_tick_is_not_skipped_by_job_deadline_jitter(self):
         import time
-        self.plugin.saved['state']={'jobs':{'test':{'hash':'hash','title':'test','next_check':time.time()+1800}},'hash_cache':{}}
+        self.plugin.saved['state']={'jobs':{'test':{'hash':'hash','client':'test','generation':1,'title':'test','next_check':time.time()+1800}},'hash_cache':{}}
         self.plugin.init_plugin({'enabled':True})
-        clients={'test':types.SimpleNamespace(tasks=lambda:[])}
+        task=types.SimpleNamespace(client='test',hash='hash',generation=1,completed_at=1,files=[],wanted=[])
+        clients={'test':types.SimpleNamespace(tasks=lambda:[task])}
         with patch.object(self.entry,'from_mp',return_value=clients),patch.object(self.entry,'plan_group',return_value={'ready':False,'reason':'等待上传'}) as planner:
             self.plugin.run(generation=self.plugin._revision)
             planner.assert_called_once()

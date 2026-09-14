@@ -329,6 +329,7 @@ class CloudBackupCleanup(_PluginBase):
         cursor = self._state.get('discovery_cursor',0) % max(1,len(candidates))
         ordered = candidates[cursor:] + candidates[:cursor]
         for task in ordered[:100]:
+            if not any(Path(p).suffix.lower() in VIDEO for p in task.wanted):continue
             if self._role_for(task).get('role')!='original':continue
             ident = task.client+':'+task.hash+':'+str(task.generation)
             if ident in self._state['jobs']:
@@ -342,12 +343,19 @@ class CloudBackupCleanup(_PluginBase):
                 source=next((p for p in task.wanted if Path(p).suffix.lower() in VIDEO),None)
                 if source:
                     records=list_transfer_history(filters={'src':source,'status':True},page={'page':1,'count':1}).items
+            mapped=[Path(x['local']) for x in json.loads(self._config['mappings'])]
+            records=[r for r in records if getattr(r,'dest',None) and any(Path(r.dest).is_relative_to(base) for base in mapped)]
             if records:
                 url,flag=self._source_summary(task)
                 self._state['jobs'][ident]=TorrentTask(task.hash,task.client,url,torrent_id(url),
                     hit_and_run=flag,time=time.time(),generation=task.generation,
                     title=records[0].title or task.hash[:12]).to_job()
         self._state['discovery_cursor']=(cursor+min(100,len(candidates))) % max(1,len(candidates))
+
+    def _sync_live_jobs(self,tasks):
+        present={(t.client,t.hash.lower(),t.generation) for t in tasks}
+        for job in self._state['jobs'].values():
+            job['present_in_downloader']=(job.get('client'),str(job.get('hash') or '').lower(),job.get('generation')) in present
 
     def run(self,force=False,generation=None):
         if self._stop.is_set() or (generation is not None and generation!=self._revision):
@@ -374,6 +382,7 @@ class CloudBackupCleanup(_PluginBase):
                 return values
             tasks=load_tasks()
             self._discover(tasks)
+            self._sync_live_jobs(tasks)
             self._save()
             cloud_factory=lambda:CloudDrive(config['cd2_url'],config['cd2_token'],stop=run_stop)
             cms=CmsIndex(config['cms_database'],config['strm_root'],config['cms_url'],config['cloud_root'])
@@ -383,7 +392,7 @@ class CloudBackupCleanup(_PluginBase):
             # The scheduler is the timing authority. A per-job "now+interval"
             # gate can fall a few seconds after the next tick and accidentally
             # skip a whole cycle; rotate oldest-checked pending jobs instead.
-            due=sorted(((key,j) for key,j in self._state['jobs'].items() if not j.get('completed_at') and
+            due=sorted(((key,j) for key,j in self._state['jobs'].items() if not j.get('completed_at') and j.get('present_in_downloader',True) and
                 (not allowed_hashes or j['hash'].lower() in allowed_hashes)),key=lambda x:x[1].get('checked_at') or 0)
             checked=0;handled=set()
             for key,job in due:
