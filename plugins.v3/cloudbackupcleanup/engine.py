@@ -84,7 +84,8 @@ def plan_group(seed_hash, tasks, clients, find_transfers, cloud_factory, cms, hr
     if roles and not any(t.hash==seed_hash and owner(t) in originals for t in group):
         raise ProbeError('当前任务不是已确认的原始下载种子，保留并等待来源核验')
     wanted = sorted({p for t in group if owner(t) in originals for p in t.wanted if Path(p).suffix.lower() in VIDEO})
-    if roles and any(set(t.wanted)-set(wanted) for t in group if owner(t) not in originals):
+    original_files={p for t in group if owner(t) in originals for p in t.wanted}
+    if roles and any(set(t.wanted)-original_files for t in group if owner(t) not in originals):
         raise ProbeError('辅种包含原始下载范围之外的文件，不能联动移除')
     role_data={'role_policy':ROLE_POLICY,'originals':roles['original'],'auxiliaries':roles['auxiliary'],
                'unknown_owners':roles['unknown']} if roles else {}

@@ -71,3 +71,10 @@ class OriginalScopeTests(MediaFixture,unittest.TestCase):
         engine.execute_plan(p,{},self.clients,lambda:list(self.tasks),lambda p:None,
             [str(self.root)],lambda:None,allowed_hashes={'hash'},verify_hr=lambda p:None,role_lookup=self.roles)
         self.assertEqual(set(calls),{'hash','aux'});self.assertFalse(self.src.exists());self.assertFalse(self.dst.exists())
+
+    def test_original_sidecars_shared_by_auxiliary_do_not_expand_video_deletion(self):
+        note=self.src.with_suffix('.nfo');note.write_text('keep original metadata')
+        self.task.files.append(str(note));self.task.wanted.append(str(note));self.add_aux()
+        self.tasks[-1].files.append(str(note));self.tasks[-1].wanted.append(str(note))
+        p=self.scoped_plan();self.assertTrue(p['ready']);self.assertNotIn(str(note),p['paths'])
+        self.assertEqual(note.read_text(),'keep original metadata')
