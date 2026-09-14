@@ -44,7 +44,7 @@ class CloudBackupCleanup(_PluginBase):
     plugin_name = '云端备份后清理'
     plugin_desc = '定期核验115备份、CMS同步及HR状态，默认只读核查。'
     plugin_icon = 'CloudDrive_A.png'
-    plugin_version = '0.6.1'
+    plugin_version = '0.6.2'
     plugin_author = 'kaestnerheisser207-web'
     author_url = 'https://github.com/kaestnerheisser207-web'
     plugin_config_prefix = 'cloudbackupcleanup_'
@@ -189,11 +189,14 @@ class CloudBackupCleanup(_PluginBase):
         if len(urls)>1:raise ProbeError('种子来源记录存在冲突，无法确认 HR 对应关系')
         return next(iter(urls),'')
 
-    def _calculation_rule(self,url):
+    def _calculation_rule(self,url,site_name=None):
         from urllib.parse import urlparse
         host=(urlparse(url).hostname or '').removeprefix('www.')
-        sites=[s for s in self._site_options() if s['domain'].removeprefix('www.')==host
-               and s['value'] in self._config['sites'] and s.get('active',True)]
+        sites=[s for s in self._site_options()
+               if s['value'] in self._config['sites'] and s.get('active',True)
+               and (not site_name or s['title']==site_name)
+               and ((host and (host==s['domain'].removeprefix('www.') or host.endswith('.'+s['domain'].removeprefix('www.'))))
+                    or (not host and site_name and s['title']==site_name))]
         if len(sites)!=1:return None
         rules=json.loads(self._config.get('hr_rules') or '[]')
         if not isinstance(rules,list):raise ProbeError('HR 计算规则必须为 JSON 数组')
@@ -205,6 +208,10 @@ class CloudBackupCleanup(_PluginBase):
         result=provider.check(url)
         if result.state!='unknown' or not self._config.get('hr_calculation'):return result
         rule=self._calculation_rule(url)
+        if not rule:
+            provenance=self._role_for(task)
+            if provenance.get('role') in ('original','auxiliary') and provenance.get('site_name'):
+                rule=self._calculation_rule(url,provenance['site_name'])
         if not rule:return result
         return calculate(task,*rule,result.reason)
 
@@ -228,7 +235,7 @@ class CloudBackupCleanup(_PluginBase):
                 # threshold remains true. Keep the exact counter witness; never
                 # turn missing counters or elapsed time into new clearance.
                 previous=recorded[key];proof=previous.get('calculation') or {}
-                rule=self._calculation_rule(url)
+                rule=self._calculation_rule(url,item.get('site_name') or proof.get('site_name'))
                 if (previous.get('basis')=='downloader_rule_calculation'
                     and key in (job.get('journal') or {}).get('tasks_removed',[])
                     and previous.get('state')=='complete' and rule and proof.get('rule')==rule[0]

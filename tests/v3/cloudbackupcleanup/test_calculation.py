@@ -66,3 +66,16 @@ class CalculationIntegrationTests(unittest.TestCase):
         p=self.plan();job={'journal':{'tasks_removed':['tr:'+'a'*40]}}
         with patch.object(self.entry,'from_mp',return_value={}),patch.object(self.entry,'NexusHr',return_value=types.SimpleNamespace(check=lambda u:HrResult('incomplete','site pending',2))),patch.object(self.p,'_calculation_rule',return_value=(RULE,'观众')):
             with self.assertRaises(self.entry.ProbeError):self.p._refresh_hr(p,job,threading.Event())
+
+    def test_missing_detail_uses_confirmed_site_provenance_for_calculation(self):
+        sites=[{'value':2,'title':'观众','domain':'audiences.me','active':True}]
+        with patch.object(self.p,'_site_options',return_value=sites),patch.object(self.p,'_role_for',return_value={'role':'original','site_name':'观众'}):
+            r=self.p._hr_check(self.task,'',types.SimpleNamespace(check=lambda u:HrResult('unknown','missing detail',1)))
+        self.assertEqual(r.state,'complete');self.assertEqual(r.calculation['site_name'],'观众')
+    def test_unconfirmed_site_name_does_not_authorize_calculation(self):
+        with patch.object(self.p,'_site_options',return_value=[{'value':2,'title':'观众','domain':'audiences.me','active':True}]),patch.object(self.p,'_role_for',return_value={'role':'unknown','site_name':'观众'}):
+            r=self.p._hr_check(self.task,'',types.SimpleNamespace(check=lambda u:HrResult('unknown','missing detail',1)))
+        self.assertEqual(r.state,'unknown')
+    def test_conflicting_url_and_site_name_do_not_calculate(self):
+        with patch.object(self.p,'_site_options',return_value=[{'value':2,'title':'观众','domain':'audiences.me','active':True}]):
+            self.assertIsNone(self.p._calculation_rule('https://another.test/details.php?id=1','观众'))

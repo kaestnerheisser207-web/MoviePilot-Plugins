@@ -13,6 +13,7 @@ ALLOWED_HR = {'complete','no_hr'}
 def hr_clearance(task_owner, source_url, result):
     try:site=urllib.parse.urlparse(source_url).hostname or ''
     except ValueError:site=''
+    if not site and getattr(result,'calculation',None):site=result.calculation.get('site_name','')
     data={'owner':task_owner,'site':site,'source_url':source_url,'state':result.state,'reason':result.reason,'checked_at':result.checked_at}
     for key in ('required_seed_seconds','seeded_seconds','remaining_seed_seconds','deadline_at','deadline_text','remaining_seed_text','basis','proof_version','station_reason','calculation'):
         value=getattr(result,key,None)
