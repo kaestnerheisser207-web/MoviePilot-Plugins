@@ -193,10 +193,11 @@ def parse_page(html, wanted_id):
 
 
 class NexusHr:
-    def __init__(self, absence_confirmed_sites=(), timeout=20, max_pages=10, stop=None):
+    def __init__(self, absence_confirmed_sites=(), timeout=20, max_pages=50, stop=None):
         # Legacy config is accepted for migration, but never authorizes absence.
         self.timeout, self.max_pages, self.stop = timeout, max_pages, stop
         self.cache, self.response_times = {}, {}
+        self.response_bytes = 0
 
     def check(self, source_url):
         now = time.time()
@@ -228,7 +229,8 @@ class NexusHr:
                 if target.username or target.password or origin(target) != origin(parsed):
                     raise ProbeError('HR 页面跳转到其他站点，已停止')
                 if target.path.rsplit('/',1)[-1] in ('myhr.php','hnr.php'):
-                    if set(urllib.parse.parse_qs(target.query))-{'id','page','hrtype','status'}:
+                    allowed={'id','page'} if target.path.rsplit('/',1)[-1]=='hnr.php' else {'id','page','hrtype','status','userid'}
+                    if set(urllib.parse.parse_qs(target.query))-allowed:
                         raise ProbeError('个人 HR 链接包含非只读筛选参数，已停止')
                 if url not in self.cache:
                     with opener.open(urllib.request.Request(url, headers=headers), timeout=self.timeout) as response:
@@ -240,6 +242,9 @@ class NexusHr:
                             except (TypeError, ValueError, OverflowError): pass
                     if len(raw) > 4 * 1024 * 1024:
                         raise ProbeError('HR 页面过大，无法确认完整记录')
+                    self.response_bytes += len(raw)
+                    if self.response_bytes > 32 * 1024 * 1024:
+                        raise ProbeError('HR 响应总量超过巡检上限，未完成完整核对')
                     self.cache[url] = raw.decode('utf-8', errors='replace')
                     self.response_times[url] = stamp
                 return self.cache[url]
@@ -253,15 +258,29 @@ class NexusHr:
             if endpoint == 'hnr.php' and (not account or len(account) != 1 or not account[0].isdigit()):
                 raise ProbeError('彩虹岛 HR 账户定位无效')
             queue, visited, results, views = [(start, '全部')], set(), [], set()
+            profile_ids=urllib.parse.parse_qs(urllib.parse.urlparse(start).query).get('userid',[])
+            if profile_ids and (len(profile_ids)!=1 or not profile_ids[0].isdigit()):
+                raise ProbeError('个人 HR 账户定位无效')
+            profile_user = profile_ids[0] if profile_ids else None
             while queue:
                 url, view = queue.pop(0)
-                if (url, view) in visited:
+                parsed_url = urllib.parse.urlparse(url)
+                query = urllib.parse.parse_qs(parsed_url.query)
+                if endpoint == 'myhr.php' and query.get('userid'):
+                    uid=query['userid']
+                    if len(uid)!=1 or not uid[0].isdigit() or (profile_user and uid[0]!=profile_user):
+                        raise ProbeError('个人 HR 分页账户发生变化')
+                    if profile_user is None:
+                        raise ProbeError('个人 HR 分页账户尚未由当前账号页面确认')
+                marker_query={k:v for k,v in query.items() if k!='userid' and not (k=='page' and v==['0'])}
+                marker=(origin(parsed_url),parsed_url.path,urllib.parse.urlencode(sorted(marker_query.items()),doseq=True),view)
+                if marker in visited:
                     continue
                 if len(visited) >= self.max_pages:
                     raise ProbeError('HR 分页超过巡检上限，未完成完整核对')
                 if account and urllib.parse.parse_qs(urllib.parse.urlparse(url).query).get('id') != account:
                     raise ProbeError('彩虹岛 HR 分页账户发生变化')
-                visited.add((url, view))
+                visited.add(marker)
                 html = fetch(url)
                 stamp = self.response_times[url]
                 if endpoint == 'hnr.php':
@@ -288,7 +307,18 @@ class NexusHr:
                             deadline_text='站点剩余 ' + window_text + '；截止时间按站点倒计时估算' if window is not None else '',
                             basis='site_waiver_view' if state == 'no_hr' else 'site_personal_view',
                             remaining_seed_text=values['还需做种时间']))
-                    queue.extend((urllib.parse.urljoin(url, href), label if label in VIEWS else view) for label, href in _links(_soup(html), endpoint))
+                    links=_links(_soup(html),endpoint)
+                    profile_ids=set()
+                    for _,href in links:
+                        ids=urllib.parse.parse_qs(urllib.parse.urlparse(href).query).get('userid')
+                        if ids:
+                            if len(ids)!=1 or not ids[0].isdigit():raise ProbeError('个人 HR 分页账户无效')
+                            profile_ids.add(ids[0])
+                    if profile_ids:
+                        if len(profile_ids)!=1 or (profile_user and profile_ids!={profile_user}):
+                            raise ProbeError('个人 HR 分页账户发生变化')
+                        profile_user=next(iter(profile_ids))
+                    queue.extend((urllib.parse.urljoin(url, href), label if label in VIEWS else view) for label, href in links)
             if not results:
                 return HrResult('unknown', '个人 HR 表未找到该种子，不能据此认定无 HR 或已达标', now)
             blocking = next((r for r in results if r.state in ('incomplete', 'overdue')), None)

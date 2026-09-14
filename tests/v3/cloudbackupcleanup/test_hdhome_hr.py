@@ -54,5 +54,14 @@ class HdhomeTests(unittest.TestCase):
         self.assertEqual(self.check_home(done=bad).state,'unknown')
     def test_login_failure_keeps_unknown(self):
         self.assertEqual(self.check_home(done='<input type="password">').state,'unknown')
+    def test_userid_pagination_is_bound_to_the_authenticated_page(self):
+        result=self.check_home(done=page('123')+'<a href="?userid=99&amp;hrtype=0&amp;page=1">下一页</a>',
+            extra={'https://hdhome.org/myhr.php?userid=99&hrtype=0&page=1':page()})
+        self.assertEqual(result.state,'complete')
+    def test_userid_cannot_change_on_later_pages(self):
+        result=self.check_home(done=page('123')+'<a href="?userid=99&amp;hrtype=0&amp;page=1">下一页</a>',
+            extra={'https://hdhome.org/myhr.php?userid=99&hrtype=0&page=1':page()+'<a href="?userid=100&amp;hrtype=0&amp;page=2">下一页</a>'})
+        self.assertEqual(result.state,'unknown')
+        self.assertFalse(any('userid=100' in url for url in self.requests))
 
 if __name__=='__main__':unittest.main()
