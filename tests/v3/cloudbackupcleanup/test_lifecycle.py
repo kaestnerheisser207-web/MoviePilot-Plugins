@@ -36,6 +36,33 @@ def load_entry():
 
 class LifecycleTests(unittest.TestCase):
     def setUp(self):self.entry=load_entry();self.plugin=self.entry.CloudBackupCleanup()
+    def test_upgrade_snapshots_mp_site_ids_and_preserves_existing_config(self):
+        config={'enabled':True,'auto_delete':False,'hashes':'a'*40,'cd2_token':'private-test'}
+        with patch.object(self.plugin,'_site_options',return_value=[{'title':'家园','value':5,'domain':'hdhome.org'}]):
+            self.plugin.init_plugin(config)
+        self.assertEqual(self.plugin.saved_config,{**self.entry.DEFAULTS,**config,'sites':[5]})
+        self.plugin.init_plugin({**self.plugin.saved_config,'sites':[]})
+        self.assertEqual(self.plugin._config['sites'],[])
+    def test_form_uses_mp_site_ids_without_credentials_and_keeps_removed_selection(self):
+        import json
+        self.plugin.init_plugin({'sites':[4,99]})
+        with patch.object(self.plugin,'_site_options',return_value=[{'title':'彩虹岛','value':4,'domain':'ptchdbits.co'}]):
+            form,_=self.plugin.get_form()
+        def walk(nodes):
+            for node in nodes:
+                yield node
+                yield from walk(node.get('content',[]))
+        select=next(x for x in walk(form) if x.get('props',{}).get('model')=='sites')
+        self.assertEqual(select['props']['items'],[{'title':'彩虹岛','value':4},{'title':'站点 99（MP 中已移除）','value':99}])
+        self.assertTrue(select['props']['multiple']);self.assertNotIn('domain',json.dumps(form))
+    def test_fresh_revalidation_honors_current_site_selection(self):
+        from cloudbackupcleanup.hr import HrResult
+        h='a'*40;url='https://site.test/details.php?id=123'
+        plan={'owners':[{'client':'tr','hash':h}],'hr':[{'owner':'tr:'+h,'source_url':url}]}
+        self.plugin.init_plugin({'sites':[]})
+        with patch.object(self.entry,'NexusHr',return_value=types.SimpleNamespace(check=lambda u:HrResult('unknown','unselected',10))) as provider:
+            with self.assertRaises(self.entry.ProbeError):self.plugin._refresh_hr(plan,{},threading.Event())
+        self.assertEqual(provider.call_args.kwargs['selected_sites'],[])
     def test_download_event_captures_only_source_without_hash_lock_or_network(self):
         self.plugin.init_plugin({'enabled':True});h='a'*40
         event=types.SimpleNamespace(event_data={'hash':h,'downloader':'tr','context':types.SimpleNamespace(torrent_info=types.SimpleNamespace(page_url='https://site.test/details.php?id=123&hit=1&passkey=discard'))})

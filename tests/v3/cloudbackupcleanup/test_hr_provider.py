@@ -49,6 +49,21 @@ class HrProviderTests(unittest.TestCase):
         self.stack.enter_context(patch('urllib.request.build_opener',return_value=Opener()))
     def tearDown(self):self.stack.close()
     def check(self,allowed=(),limit=10):return hr.NexusHr(allowed,max_pages=limit).check('https://site.test/details.php?id=123')
+    def test_unselected_site_is_unknown_without_network_even_if_complete(self):
+        self.site.id=4;self.pages['https://site.test/myhr.php?status=done']=ROW
+        for selected in ([],[5]):
+            result=hr.NexusHr(selected_sites=selected).check('https://site.test/details.php?id=123')
+            self.assertEqual(result.state,'unknown');self.assertIn('未勾选',result.reason)
+        self.assertEqual(self.requests,[])
+    def test_selected_site_still_requires_personal_proof(self):
+        self.site.id=4
+        self.assertEqual(hr.NexusHr(selected_sites=[4]).check('https://site.test/details.php?id=123').state,'unknown')
+        self.pages['https://site.test/myhr.php?status=done']=ROW
+        self.assertEqual(hr.NexusHr(selected_sites=[4]).check('https://site.test/details.php?id=123').state,'complete')
+    def test_removed_or_disabled_selected_site_cannot_clear(self):
+        self.site.id=4;self.site.is_active=False
+        result=hr.NexusHr(selected_sites=[4]).check('https://site.test/details.php?id=123')
+        self.assertEqual(result.state,'unknown');self.assertEqual(self.requests,[])
     def test_absence_defaults_to_unknown(self):self.assertEqual(self.check().state,'unknown')
     def test_cookie_trailing_newline_is_trimmed_at_request_boundary(self):
         self.site.cookie='test-only-cookie\n'

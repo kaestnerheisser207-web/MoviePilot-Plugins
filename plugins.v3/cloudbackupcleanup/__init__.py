@@ -22,10 +22,11 @@ from .downloaders import canonical_source_url, from_mp
 from .engine import VIDEO, ALLOWED_HR, check_delete_observer, check_scope, execute_plan, group_for, plan_group, hr_clearance
 from .hr import NexusHr, PROOF_VERSION, torrent_id
 from .tasks import TorrentHistory, TorrentTask, HNRStatus, migrate_state
+from . import ui
 
 
 DEFAULTS = {
-    'enabled':False, 'auto_delete':False, 'run_once':False, 'interval':30,
+    'sites':[], 'enabled':False, 'auto_delete':False, 'run_once':False, 'interval':30,
     'cd2_url':'', 'cd2_token':'', 'cms_url':'', 'cms_database':'/cms-index/cms-online.db',
     'strm_root':'/video/cloud-media', 'cloud_root':'/115open',
     'allowed_roots':'/video/btdownloads\n/video/movie\n/video/tv',
@@ -39,7 +40,7 @@ class CloudBackupCleanup(_PluginBase):
     plugin_name = '云端备份后清理'
     plugin_desc = '定期核验115备份、CMS同步及HR状态，默认只读核查。'
     plugin_icon = 'CloudDrive_A.png'
-    plugin_version = '0.3.0'
+    plugin_version = '0.4.0'
     plugin_author = 'kaestnerheisser207-web'
     author_url = 'https://github.com/kaestnerheisser207-web'
     plugin_config_prefix = 'cloudbackupcleanup_'
@@ -63,6 +64,12 @@ class CloudBackupCleanup(_PluginBase):
             raise RuntimeError('旧巡检尚未退出，请稍后保存配置')
         try:
             self._config = {**DEFAULTS, **(config or {})}
+            # Snapshot current MP IDs for upgrades. Later new sites are opt-in.
+            if config and 'sites' not in config:
+                self._config['sites']=[site['value'] for site in self._site_options()]
+                self.update_config(self._config)
+            if not isinstance(self._config.get('sites'),list):
+                self._config['sites']=[]
             for switch in ('enabled','auto_delete','run_once'):
                 self._config[switch] = self._config.get(switch) is True
             self._once = self._config['run_once']
@@ -164,7 +171,7 @@ class CloudBackupCleanup(_PluginBase):
         expected={x['client']+':'+x['hash'] for x in plan['owners']}
         recorded={x.get('owner'):x for x in plan.get('hr',[])}
         if set(recorded)!=expected:raise ProbeError('清理计划缺少完整的关联种子 HR 证据')
-        provider=NexusHr(stop=stop);fresh=[]
+        provider=NexusHr(stop=stop, selected_sites=self._config['sites']);fresh=[]
         for item in plan['owners']:
             if stop.is_set():raise ProbeError('巡检已停止')
             key=item['client']+':'+item['hash']
@@ -299,7 +306,7 @@ class CloudBackupCleanup(_PluginBase):
             self._save()
             cloud_factory=lambda:CloudDrive(config['cd2_url'],config['cd2_token'],stop=run_stop)
             cms=CmsIndex(config['cms_database'],config['strm_root'],config['cms_url'],config['cloud_root'])
-            hr=NexusHr(stop=run_stop)
+            hr=NexusHr(stop=run_stop, selected_sites=config['sites'])
             interval=max(5,int(config['interval']))*60
             allowed_hashes={x.strip().lower() for x in str(config.get('hashes','')).splitlines() if x.strip()}
             # The scheduler is the timing authority. A per-job "now+interval"
@@ -377,66 +384,27 @@ class CloudBackupCleanup(_PluginBase):
             finally:
                 self._lock.release()
 
+    @staticmethod
+    def _site_options():
+        try:
+            from app.db.oper.site import SiteOper
+            return [{'title':str(site.name),'value':site.id,'domain':str(site.domain)}
+                    for site in SiteOper().list()]
+        except Exception:
+            logger.warn('读取 MP 站点列表失败；站点未选择时保留文件')
+            return []
+
     def get_form(self):
-        def item(component,model,label,**props):
-            return {'component':component,'props':{'model':model,'label':label,**props}}
-        controls=[
-            item('VSwitch','enabled','启用周期巡检'),item('VSwitch','auto_delete','自动清理本地视频'),
-            {'component':'VAlert','props':{'type':'warning','variant':'tonal','text':'默认只读。开启自动清理后，只有备份、CMS和关联种子的HR全部确认，才删除下载任务及核验过的视频硬链接。'}},
-            item('VSwitch','run_once','保存后巡检一次'),item('VTextField','interval','巡检间隔（分钟）',type='number'),
-            item('VTextField','cd2_url','CD2 地址'),item('VTextField','cd2_token','CD2 只读 API 令牌',type='password'),
-            item('VTextField','cms_url','CMS 地址'),item('VTextField','cms_database','CMS 只读索引路径'),
-            item('VTextField','strm_root','CMS STRM 本地目录'),item('VTextField','cloud_root','CD2 中的115根目录'),
-            item('VTextarea','allowed_roots','允许清理的本地目录（每行一个）',rows=3),
-            item('VTextarea','mappings','本地到115的路径映射（JSON）',rows=6),
-            item('VTextarea','hashes','限定种子 hash（留空检查当前任务）',rows=2),
-            item('VTextarea','source_mappings','旧任务来源补录（JSON：下载器名:hash → 详情页或来源信息）',rows=3),
-            item('VTextField','batch_size','每轮最多核查组数',type='number'),
-            item('VTextField','hash_mib_s','哈希读取上限（MiB/s）',type='number'),
-            {'component':'VAlert','props':{'type':'info','variant':'tonal','text':'只接受站点确认。页面无记录、查询失败、标签缺失和下载器计时均不会自动放行；旧空列表放行配置已停用。'}}]
-        return [{'component':'VForm','content':controls}],dict(DEFAULTS)
+        options=self._site_options()
+        known={x['value'] for x in options}
+        # Keep removed IDs visible so a save cannot silently discard selection.
+        options.extend({'title':f'站点 {sid}（MP 中已移除）','value':sid}
+                       for sid in self._config.get('sites',[]) if sid not in known)
+        return ui.form([{'title':x['title'],'value':x['value']} for x in options]),dict(DEFAULTS)
 
     def get_page(self):
-        def label(value):
-            return str(value).replace('{{','｛｛').replace('}}','｝｝')
-        rows=[]
         snapshot=self.get_data('state') or self._state
-        jobs=snapshot.get('jobs',{})
         next_fire=self._interval_trigger.get_next_fire_time(None,datetime.now(timezone.utc)) if self.get_state() and self._interval_trigger else None
-        for job in sorted(jobs.values(),key=lambda j:j.get('checked_at',0),reverse=True)[:200]:
-            # A saved estimate belongs to the previous schedule after a config
-            # reload. Display the currently registered trigger's next tick.
-            when=next_fire.timestamp() if next_fire else None
-            hr_items=job.get('inspection',{}).get('hr',[])
-            state_labels={HNRStatus.PENDING.value:'未知 / 待核验',HNRStatus.IN_PROGRESS.value:'未达标',HNRStatus.COMPLIANT.value:'已达标',HNRStatus.UNRESTRICTED.value:'已确认无考核',HNRStatus.OVERDUE.value:'逾期未达标'}
-            original='有 HR' if job.get('original_hit_and_run') is True else ('标记为无 HR' if job.get('original_hit_and_run') is False else '未知')
-            cells=[{'component':'td','text':label(x)} for x in (
-                job['title'],job['hash'][:12],job.get('group_count',len(hr_items) or '—'),original,state_labels.get(job.get('personal_hr_state'),'未知 / 待核验'),job.get('status','等待巡检'),
-                datetime.fromtimestamp(when).strftime('%m-%d %H:%M') if when and self.get_state() and not job.get('completed_at') else '—')]
-            details=[]
-            for item in hr_items:
-                name=(item.get('site') or '来源未知')+' · '+item.get('owner','').rsplit(':',1)[-1][:8]
-                stamp=datetime.fromtimestamp(item['checked_at']).strftime('%m-%d %H:%M') if item.get('checked_at') else ''
-                timing=''
-                remaining=item.get('remaining_seed_seconds')
-                if remaining is not None:
-                    hours,rest=divmod(max(0,int(remaining)),3600);minutes,seconds=divmod(rest,60)
-                    timing+=f'；还需做种 {hours}小时{minutes}分{seconds}秒'
-                elif item.get('remaining_seed_text'):
-                    timing+='；站点剩余做种 '+item['remaining_seed_text']
-                if item.get('deadline_at'):
-                    timing+='；预计截止 '+datetime.fromtimestamp(item['deadline_at']).strftime('%m-%d %H:%M:%S')+'（站点倒计时）'
-                details.append({'component':'li','text':label(name+'：'+item.get('reason','')+timing+' '+stamp)})
-            cells.append({'component':'td','content':[{'component':'ul','content':details}]} if details else {'component':'td','text':'尚未检查'})
-            rows.append({'component':'tr','content':cells})
-        mode='自动清理' if self._config.get('auto_delete') else '只读核查'
-        result=[{'component':'VAlert','props':{'type':'info','variant':'tonal','text':f'{mode} · 共 {len(jobs)} 条记录'+(' · 巡检中' if snapshot.get('running') else '')}}]
-        index_available=Path(self._config['cms_database']).is_file()
-        result.append({'component':'VAlert','props':{'type':'info' if index_available else 'warning','variant':'tonal',
-            'text':'CMS只读索引：'+('已接入' if index_available else '尚未接入，请检查只读挂载')}})
-        if snapshot.get('last_error'):
-            result.append({'component':'VAlert','props':{'type':'error','text':label(snapshot['last_error'])}})
-        result.append({'component':'VTable','content':[
-            {'component':'thead','content':[{'component':'tr','content':[{'component':'th','text':x} for x in ('资源','种子','关联数','原始标记','个人 HR','当前状态','预计复查','最近HR核验')]}]},
-            {'component':'tbody','content':rows}]})
-        return result
+        names={x['domain']:x['title'] for x in self._site_options()}
+        return ui.page(snapshot,self._config,next_fire.timestamp() if next_fire else None,
+                       Path(self._config['cms_database']).is_file(),names)

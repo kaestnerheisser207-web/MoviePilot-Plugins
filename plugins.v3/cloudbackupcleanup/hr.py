@@ -193,9 +193,10 @@ def parse_page(html, wanted_id):
 
 
 class NexusHr:
-    def __init__(self, absence_confirmed_sites=(), timeout=20, max_pages=50, stop=None):
+    def __init__(self, absence_confirmed_sites=(), timeout=20, max_pages=50, stop=None, selected_sites=None):
         # Legacy config is accepted for migration, but never authorizes absence.
         self.timeout, self.max_pages, self.stop = timeout, max_pages, stop
+        self.selected_sites = selected_sites
         self.cache, self.response_times = {}, {}
         self.response_bytes = 0
 
@@ -211,6 +212,8 @@ class NexusHr:
             from app.sdk.config import settings
             host = parsed.hostname or ''
             site = SiteOper().get_by_domain(host)
+            if self.selected_sites is not None and (not site or getattr(site, 'id', None) not in self.selected_sites):
+                raise ProbeError('站点未勾选，保留关联种子及共享文件')
             if not site or not site.is_active or not site.cookie:
                 raise ProbeError('站点未配置或会话不可用')
             configured = urllib.parse.urlparse(site.url or ('https://' + site.domain))
