@@ -33,6 +33,8 @@ class HrResult:
     basis: str = ''
     proof_version: int = PROOF_VERSION
     remaining_seed_text: str = ''
+    station_reason: str = ''
+    calculation: dict | None = None
 
 
 def torrent_id(url):

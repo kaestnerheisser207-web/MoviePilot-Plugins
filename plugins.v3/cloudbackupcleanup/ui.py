@@ -45,6 +45,11 @@ def form(site_options):
         col(field('cms_database','CMS 只读索引路径')),
         col(field('cloud_root','115 根目录')),
         col(field('strm_root','CMS STRM 本地目录'))])
+    calculation=section('HR 判定方式','站点有明确结果时优先采用；缺少结果时可按 H&R 助手规则与下载器实际数据计算。',[
+        col(node('VSwitch',model='hr_calculation',label='允许按规则计算 HR',color='primary',
+            hint='计算达标可用于清理许可；自动清理开关仍独立控制删除。',**{'persistent-hint':True}),12),
+        col(field('hr_rules','H&R 助手计算规则（JSON）',
+            '* 为全局规则：144 小时 + 24 小时附加时长，或分享率 > 99；其余按站点独立规则。规则是插件配置，不代表站点实时确认。',component='VTextarea',rows=5),12)])
     paths=section('目录与核查范围','保留现有路径映射和限定种子范围。',[
         col(field('allowed_roots','允许清理的本地目录','每行一个绝对路径',component='VTextarea',rows=3)),
         col(field('hashes','限定种子 hash','每行一个；留空会检查下载器当前任务',component='VTextarea',rows=3)),
@@ -53,8 +58,8 @@ def form(site_options):
         node('VExpansionPanel',content=[node('VExpansionPanelTitle','高级：旧任务来源补录'),
             node('VExpansionPanelText',content=[field('source_mappings','来源映射（JSON）',
                 '仅用于缺少下载来源的旧任务，不可手工指定 HR 达标状态。',component='VTextarea',rows=5)])])])
-    return [node('VForm',content=[basic,storage,paths,advanced,
-        node('div','仅接受站点确认：无记录、查询失败或 HR 未达标时保留文件；原始下载通过后，清理前再核验辅种个人 HR。',
+    return [node('VForm',content=[basic,calculation,storage,paths,advanced,
+        node('div','先核验备份，再判断原始种子 HR；清理前还会核验辅种。未达标或缺少有效规则、计时证据时继续保留。',
              **{'class':'text-body-2 text-medium-emphasis mb-3'})])]
 
 
@@ -94,6 +99,8 @@ def page(snapshot,config,next_check,index_available,site_names):
         items=[x for x in all_items if x.get('role','original')=='original']
         auxiliary_items={x.get('owner'):x for x in all_items if x.get('role')=='auxiliary'}
         state,color=STATES.get(job.get('personal_hr_state'),STATES['unknown'])
+        if items and any(x.get('basis')=='downloader_rule_calculation' for x in items):
+            state=('计算达标' if job.get('personal_hr_state')=='complete' else '计算未达标')
         original='有 HR' if job.get('original_hit_and_run') is True else ('标记为无 HR' if job.get('original_hit_and_run') is False else '未知')
         remaining=[x['remaining_seed_seconds'] for x in items if x.get('remaining_seed_seconds') is not None]
         origins=inspection.get('originals',[]);auxiliaries=inspection.get('auxiliaries',[])
@@ -110,8 +117,10 @@ def page(snapshot,config,next_check,index_available,site_names):
         for item in items:
             host=item.get('site') or '来源未知';name=site_names.get(host,host)
             label,c=STATES.get(item.get('state'),STATES['unknown'])
+            if item.get('basis')=='downloader_rule_calculation':label='按规则计算'
             body=[node('div',content=[chip(name,'primary'),chip(label,c)]),
                 node('div',item.get('reason') or '尚无判断依据',**{'class':'text-body-2 mb-2','style':'overflow-wrap:anywhere'})]
+            if item.get('station_reason'):body.append(node('div','站点查询：'+item['station_reason'],**{'class':'text-caption text-medium-emphasis mb-2'}))
             timing=[]
             if item.get('remaining_seed_seconds') is not None:timing.append('还需做种 '+duration(item['remaining_seed_seconds']))
             elif item.get('remaining_seed_text'):timing.append('站点剩余做种 '+item['remaining_seed_text'])

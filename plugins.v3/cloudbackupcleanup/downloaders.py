@@ -23,6 +23,7 @@ class Task:
     generation: int = 0
     labels: list[str] = field(default_factory=list)
     downloaded_bytes: int | None = None
+    ratio: float | None = None
 
 
 def safe_join(base, name):
@@ -147,10 +148,10 @@ class Client:
                     all_paths = [safe_join(base, f['name']) for f in files]
                     selected = [safe_join(base, f['name']) for f in files if f.get('priority', 0) > 0]
                     complete = bool(selected) and row.get('progress') == 1 and all(f.get('progress') == 1 for f in files if f.get('priority', 0) > 0)
-                    result.append(Task(self.name, h, complete, all_paths, selected, completed_at=row.get('completion_on', 0), seed_seconds=row.get('seeding_time', 0), generation=row.get('added_on',0), labels=[x.strip() for x in str(row.get('tags') or '').split(',') if x.strip()], downloaded_bytes=row.get('downloaded')))
+                    result.append(Task(self.name, h, complete, all_paths, selected, completed_at=row.get('completion_on', 0), seed_seconds=row.get('seeding_time', 0), generation=row.get('added_on',0), labels=[x.strip() for x in str(row.get('tags') or '').split(',') if x.strip()], downloaded_bytes=row.get('downloaded'),ratio=row.get('ratio')))
                 return result
             if self.kind == 'transmission':
-                rows = self.tr('torrent-get', {'fields': ['hashString', 'percentDone', 'downloadDir', 'files', 'fileStats', 'comment', 'doneDate', 'secondsSeeding', 'addedDate', 'labels', 'downloadedEver']})['torrents']
+                rows = self.tr('torrent-get', {'fields': ['hashString', 'percentDone', 'downloadDir', 'files', 'fileStats', 'comment', 'doneDate', 'secondsSeeding', 'addedDate', 'labels', 'downloadedEver', 'uploadRatio']})['torrents']
                 result = []
                 for row in rows:
                     files, stats = row['files'], row['fileStats']
@@ -161,7 +162,7 @@ class Client:
                     selected = [p for p, s in zip(all_paths, stats) if s.get('wanted')]
                     complete = bool(selected) and row.get('percentDone') == 1 and all(f.get('bytesCompleted', -1) == f['length'] for f,s in zip(files,stats) if s.get('wanted'))
                     result.append(Task(self.name, row['hashString'], complete, all_paths, selected,
-                        detail_url(row.get('comment')), row.get('doneDate',0), row.get('secondsSeeding',0), row.get('addedDate',0), list(row.get('labels') or []), row.get('downloadedEver')))
+                        detail_url(row.get('comment')), row.get('doneDate',0), row.get('secondsSeeding',0), row.get('addedDate',0), list(row.get('labels') or []), row.get('downloadedEver'),row.get('uploadRatio')))
                 return result
             raise ProbeError(f'下载器 {self.kind} 尚未适配，无法排除共享文件')
         except ProbeError:

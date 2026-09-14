@@ -24,10 +24,13 @@ from .hr import NexusHr, PROOF_VERSION, torrent_id
 from .tasks import TorrentHistory, TorrentTask, HNRStatus, migrate_state
 from . import ui
 from .roles import ROLE_POLICY, classify
+from .calculation import calculate
 
+
+RULES_DEFAULT=Path(__file__).with_name('calculation_rules.json').read_text()
 
 DEFAULTS = {
-    'sites':[], 'enabled':False, 'auto_delete':False, 'run_once':False, 'interval':30,
+    'hr_calculation':False,'hr_rules':RULES_DEFAULT,'sites':[], 'enabled':False, 'auto_delete':False, 'run_once':False, 'interval':30,
     'cd2_url':'', 'cd2_token':'', 'cms_url':'', 'cms_database':'/cms-index/cms-online.db',
     'strm_root':'/video/cloud-media', 'cloud_root':'/115open',
     'allowed_roots':'/video/btdownloads\n/video/movie\n/video/tv',
@@ -41,7 +44,7 @@ class CloudBackupCleanup(_PluginBase):
     plugin_name = '云端备份后清理'
     plugin_desc = '定期核验115备份、CMS同步及HR状态，默认只读核查。'
     plugin_icon = 'CloudDrive_A.png'
-    plugin_version = '0.5.1'
+    plugin_version = '0.6.0'
     plugin_author = 'kaestnerheisser207-web'
     author_url = 'https://github.com/kaestnerheisser207-web'
     plugin_config_prefix = 'cloudbackupcleanup_'
@@ -71,7 +74,7 @@ class CloudBackupCleanup(_PluginBase):
                 self.update_config(self._config)
             if not isinstance(self._config.get('sites'),list):
                 self._config['sites']=[]
-            for switch in ('enabled','auto_delete','run_once'):
+            for switch in ('enabled','auto_delete','run_once','hr_calculation'):
                 self._config[switch] = self._config.get(switch) is True
             self._once = self._config['run_once']
             if self._once:
@@ -186,6 +189,25 @@ class CloudBackupCleanup(_PluginBase):
         if len(urls)>1:raise ProbeError('种子来源记录存在冲突，无法确认 HR 对应关系')
         return next(iter(urls),'')
 
+    def _calculation_rule(self,url):
+        from urllib.parse import urlparse
+        host=(urlparse(url).hostname or '').removeprefix('www.')
+        sites=[s for s in self._site_options() if s['domain'].removeprefix('www.')==host
+               and s['value'] in self._config['sites'] and s.get('active',True)]
+        if len(sites)!=1:return None
+        rules=json.loads(self._config.get('hr_rules') or '[]')
+        if not isinstance(rules,list):raise ProbeError('HR 计算规则必须为 JSON 数组')
+        found=[r for r in rules if isinstance(r,dict) and r.get('site_name')==sites[0]['title']]
+        if not found:found=[r for r in rules if isinstance(r,dict) and r.get('site_name')=='*']
+        return (found[0],sites[0]['title']) if len(found)==1 else None
+
+    def _hr_check(self,task,url,provider):
+        result=provider.check(url)
+        if result.state!='unknown' or not self._config.get('hr_calculation'):return result
+        rule=self._calculation_rule(url)
+        if not rule:return result
+        return calculate(task,*rule,result.reason)
+
     def _refresh_hr(self,plan,job,stop):
         if plan.get('role_policy')!=ROLE_POLICY:
             raise ProbeError('旧清理计划需重新核验原始下载身份，不能自动恢复删除')
@@ -193,17 +215,35 @@ class CloudBackupCleanup(_PluginBase):
         recorded={x.get('owner'):x for x in plan.get('hr',[])}
         if set(recorded)!=expected:raise ProbeError('清理计划缺少完整的关联种子 HR 证据')
         provider=NexusHr(stop=stop, selected_sites=self._config['sites']);fresh=[]
+        clients=from_mp(stop=stop) if self._config.get('hr_calculation') else {}
+        live={t.client+':'+t.hash:t for client in clients.values() for t in client.tasks()}
         for item in plan['originals']+plan.get('auxiliaries',[]):
             if stop.is_set():raise ProbeError('巡检已停止')
             key=item['client']+':'+item['hash']
             task=SimpleNamespace(client=item['client'],hash=item['hash'])
             url=self._source_for(task,fallback=recorded[key].get('source_url',''))
             role='original' if item in plan['originals'] else 'auxiliary'
-            fresh.append({**hr_clearance(key,url,provider.check(url)),'role':role})
+            if self._config.get('hr_calculation') and key not in live:
+                # Once a downloader has confirmed task removal, a proven numeric
+                # threshold remains true. Keep the exact counter witness; never
+                # turn missing counters or elapsed time into new clearance.
+                previous=recorded[key];proof=previous.get('calculation') or {}
+                rule=self._calculation_rule(url)
+                if (previous.get('basis')=='downloader_rule_calculation'
+                    and key in (job.get('journal') or {}).get('tasks_removed',[])
+                    and previous.get('state')=='complete' and rule and proof.get('rule')==rule[0]
+                    and proof.get('task_generation')==item.get('generation')):
+                    station=provider.check(url)
+                    if station.state=='unknown':fresh.append(dict(previous));continue
+                    result=station
+                else:result=provider.check(url)
+            else:
+                result=self._hr_check(live.get(key,task),url,provider)
+            fresh.append({**hr_clearance(key,url,result),'role':role})
             if role=='original' and fresh[-1]['state'] not in ALLOWED_HR:break
         job['last_revalidation']={'checked_at':time.time(),'hr':fresh}
         valid=all(x['state'] in ALLOWED_HR and x.get('proof_version')==PROOF_VERSION and x.get('basis') in
-            {'site_percentage_and_seed_time','site_personal_view','site_waiver_view'} for x in fresh)
+            ({'site_percentage_and_seed_time','site_personal_view','site_waiver_view'} | ({'downloader_rule_calculation'} if self._config.get('hr_calculation') else set())) for x in fresh)
         if not valid:
             job['inspection']={**plan,'ready':False,'hr':fresh,'reason':'清理前 HR 复核未通过'}
             job['personal_hr_state']=next((x['state'] for x in fresh if x['role']=='original' and x['state'] not in ALLOWED_HR),'complete')
@@ -357,7 +397,7 @@ class CloudBackupCleanup(_PluginBase):
                             job['status']='清理暂停：当前为只读模式';continue
                         plan=job['plan']
                     else:
-                        plan=plan_group(job['hash'],tasks,clients,self._find_transfers,cloud_factory,cms,hr,config,self._state['hash_cache'],run_stop,source_lookup=lambda task:self._source_for(task,clients[task.client]),role_lookup=self._role_for)
+                        plan=plan_group(job['hash'],tasks,clients,self._find_transfers,cloud_factory,cms,hr,config,self._state['hash_cache'],run_stop,source_lookup=lambda task:self._source_for(task,clients[task.client]),role_lookup=self._role_for,hr_check=self._hr_check)
                         job['status']=plan['reason'];job['inspection']=plan
                         states=[x['state'] for x in plan.get('hr',[]) if x.get('role','original')=='original']
                         cleared_state='no_hr' if states and all(state=='no_hr' for state in states) else 'complete'
@@ -412,7 +452,7 @@ class CloudBackupCleanup(_PluginBase):
     def _site_options():
         try:
             from app.db.oper.site import SiteOper
-            return [{'title':str(site.name),'value':site.id,'domain':str(site.domain)}
+            return [{'title':str(site.name),'value':site.id,'domain':str(site.domain),'active':bool(site.is_active)}
                     for site in SiteOper().list()]
         except Exception:
             logger.warn('读取 MP 站点列表失败；站点未选择时保留文件')

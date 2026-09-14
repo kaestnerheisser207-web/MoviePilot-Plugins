@@ -14,7 +14,7 @@ def hr_clearance(task_owner, source_url, result):
     try:site=urllib.parse.urlparse(source_url).hostname or ''
     except ValueError:site=''
     data={'owner':task_owner,'site':site,'source_url':source_url,'state':result.state,'reason':result.reason,'checked_at':result.checked_at}
-    for key in ('required_seed_seconds','seeded_seconds','remaining_seed_seconds','deadline_at','deadline_text','remaining_seed_text','basis','proof_version'):
+    for key in ('required_seed_seconds','seeded_seconds','remaining_seed_seconds','deadline_at','deadline_text','remaining_seed_text','basis','proof_version','station_reason','calculation'):
         value=getattr(result,key,None)
         if value is not None and value!='':data[key]=value
     return data
@@ -73,7 +73,7 @@ def cloud_path(local, mappings):
     return str(PurePosixPath(mapping['cloud']) / relative.as_posix()), str(PurePosixPath(mapping.get('cd2_source') or mapping['local']) / relative.as_posix())
 
 
-def plan_group(seed_hash, tasks, clients, find_transfers, cloud_factory, cms, hr, config, cache, stop, source_lookup=None, role_lookup=None):
+def plan_group(seed_hash, tasks, clients, find_transfers, cloud_factory, cms, hr, config, cache, stop, source_lookup=None, role_lookup=None, hr_check=None):
     group = group_for(tasks, seed_hash)
     if not group:
         raise ProbeError('下载器中没有该任务；不会依据旧历史删除文件')
@@ -142,7 +142,7 @@ def plan_group(seed_hash, tasks, clients, find_transfers, cloud_factory, cms, hr
         if stop.is_set():
             raise ProbeError('巡检已停止')
         source_url=source_lookup(task) if source_lookup else clients[task.client].source(task)
-        result = hr.check(source_url)
+        result = hr_check(task,source_url,hr) if hr_check else hr.check(source_url)
         clearances.append({**hr_clearance(owner(task),source_url,result),'role':'original'})
     if any(c['state'] in ('incomplete','overdue') for c in clearances):
         reason='HR 已逾期但未达标，继续保留' if any(c['state']=='overdue' for c in clearances) else '等待 HR：原始下载种子尚未达标'
@@ -159,7 +159,7 @@ def plan_group(seed_hash, tasks, clients, find_transfers, cloud_factory, cms, hr
             if owner(task) in originals:continue
             if stop.is_set():raise ProbeError('巡检已停止')
             source_url=source_lookup(task) if source_lookup else clients[task.client].source(task)
-            result=hr.check(source_url)
+            result=hr_check(task,source_url,hr) if hr_check else hr.check(source_url)
             clearances.append({**hr_clearance(owner(task),source_url,result),'role':'auxiliary'})
         blocked=next((c for c in clearances if c['state'] not in ALLOWED_HR),None)
         if blocked:

@@ -7,7 +7,7 @@ Source: https://github.com/InfinityPacer/MoviePilot-Plugins/tree/a009a8c7031fe98
 Revision: `a009a8c7031fe989cd4d3c8c421fe6f7396ca3de`.
 License: GNU General Public License v3.0; see this repository's `LICENSE` and the upstream license at https://github.com/InfinityPacer/MoviePilot-Plugins/blob/a009a8c7031fe989cd4d3c8c421fe6f7396ca3de/LICENSE.
 
-The reduced `TorrentHistory`, `TorrentTask`, and `HNRStatus` definitions in `tasks.py`, and the download-event/history/state-management approach in the plugin entrypoint, are adapted from the H&R Assistant. This plugin preserves original HR metadata separately from station-confirmed personal status. It does not use the upstream elapsed-since-download timer or configured deadline calculation to authorize deletion, and does not install or run the H&R Assistant's tag/notification automation.
+The reduced `TorrentHistory`, `TorrentTask`, and `HNRStatus` definitions in `tasks.py`, and the download-event/history/state-management approach in the plugin entrypoint, are adapted from the H&R Assistant. This plugin preserves original HR metadata separately from station-confirmed personal status. The comparison in `calculation.py` and the defaults in `calculation_rules.json` are also adapted from the same upstream methods and rules (144h global duration, 24h additional time, ratio 99, with site overrides). When explicitly enabled, calculated clearance may authorize deletion. It uses actual downloader seeding counters, never the upstream elapsed-since-download timer or configured deadline calculation, and does not install or run the H&R Assistant's tag/notification automation.
 
 ## CHDBits H&R Monitor — cmmchina
 

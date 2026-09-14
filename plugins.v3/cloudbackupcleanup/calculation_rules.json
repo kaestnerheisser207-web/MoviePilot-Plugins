@@ -1,0 +1,56 @@
+[
+  {
+    "site_name": "彩虹岛",
+    "hr_duration": 120.0,
+    "additional_seed_time": 24,
+    "hr_ratio": 99.0
+  },
+  {
+    "site_name": "皇后",
+    "hr_duration": 36.0,
+    "additional_seed_time": 24,
+    "hr_ratio": 99
+  },
+  {
+    "site_name": "观众",
+    "hr_duration": 48.0,
+    "additional_seed_time": 24,
+    "hr_ratio": 99
+  },
+  {
+    "site_name": "听听歌",
+    "hr_duration": 60.0,
+    "additional_seed_time": 24,
+    "hr_ratio": 99
+  },
+  {
+    "site_name": "家园",
+    "hr_duration": 336.0,
+    "additional_seed_time": 24,
+    "hr_ratio": 99
+  },
+  {
+    "site_name": "我堡",
+    "hr_duration": 48.0,
+    "additional_seed_time": 24,
+    "hr_ratio": 99
+  },
+  {
+    "site_name": "高清杜比",
+    "hr_duration": 48.0,
+    "additional_seed_time": 24,
+    "hr_ratio": 1.6
+  },
+  {
+    "site_name": "憨憨",
+    "hr_duration": 72.0,
+    "additional_seed_time": 24,
+    "hr_ratio": 99.0
+  },
+  {
+    "site_name": "*",
+    "hr_duration": 144,
+    "additional_seed_time": 24,
+    "hr_ratio": 99
+  }
+]
