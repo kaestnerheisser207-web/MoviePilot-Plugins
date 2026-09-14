@@ -1,5 +1,6 @@
 """Cloud/CMS-before-HR planning and durable, exact-file cleanup."""
 import time
+import urllib.parse
 from pathlib import Path, PurePosixPath
 from .cloud import ProbeError
 from .files import identity, same_content_identity, sha1_file, unlink_verified
@@ -99,8 +100,11 @@ def plan_group(seed_hash, tasks, clients, find_transfers, cloud_factory, cms, hr
     for task in group:
         if stop.is_set():
             raise ProbeError('巡检已停止')
-        result = hr.check(clients[task.client].source(task))
-        clearances.append({'owner':owner(task),'state':result.state,'reason':result.reason,'checked_at':result.checked_at})
+        source_url=clients[task.client].source(task)
+        result = hr.check(source_url)
+        try:site=urllib.parse.urlparse(source_url).hostname or ''
+        except ValueError:site=''
+        clearances.append({'owner':owner(task),'site':site,'state':result.state,'reason':result.reason,'checked_at':result.checked_at})
     if any(c['state']=='incomplete' for c in clearances):
         return {'ready':False,'reason':'等待 HR：关联种子尚未全部达标','hr':clearances,'cloud_verified_at':verified_at,'evidence':evidence}
     if any(c['state'] not in ALLOWED_HR for c in clearances):

@@ -96,13 +96,16 @@ class RemoteFile:
 
 
 class CloudDrive:
-    def __init__(self, url, token, timeout=20):
+    def __init__(self, url, token, timeout=20, stop=None):
         self.url = url.rstrip('/')
         self.token = token
         self.timeout = timeout
+        self.stop = stop
         self.directories = {}
 
     def rpc(self, method, payload=b''):
+        if self.stop and self.stop.is_set():
+            raise ProbeError('巡检已停止')
         if method not in ('GetUploadFileList', 'GetSubFiles', 'GetRuntimeInfo', 'BackupGetAll'):
             raise ProbeError('禁止调用 CD2 写入接口')
         if not self.token or not self.url.startswith(('http://', 'https://')):
@@ -117,6 +120,8 @@ class CloudDrive:
             opener=urllib.request.build_opener(NoRedirect(),urllib.request.ProxyHandler({}))
             with opener.open(request, timeout=self.timeout) as response:
                 raw = response.read(32 * 1024 * 1024 + 1)
+            if self.stop and self.stop.is_set():
+                raise ProbeError('巡检已停止')
             if len(raw) > 32 * 1024 * 1024:
                 raise ProbeError('CD2 响应超出单次读取上限')
             return frames(raw)
@@ -152,6 +157,8 @@ class CloudDrive:
                     raise ProbeError('CD2 对应备份启用了删源或目标同步删除，请先调整备份策略')
 
     def get_file(self, path):
+        if self.stop and self.stop.is_set():
+            raise ProbeError('巡检已停止')
         from pathlib import PurePosixPath
         parent = str(PurePosixPath(path).parent)
         if parent not in self.directories:

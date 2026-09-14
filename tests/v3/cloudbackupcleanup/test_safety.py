@@ -37,6 +37,10 @@ class WireTests(unittest.TestCase):
         self.assertEqual(cloud.text(result[0],1),'电影');self.assertEqual(cloud.first(result[0],2),1392653391)
     def test_mutation_rpc_not_available(self):
         with self.assertRaises(cloud.ProbeError):cloud.CloudDrive('http://example','secret').rpc('DeleteFile')
+    def test_stopped_cloud_probe_does_not_start_network(self):
+        stop=threading.Event();stop.set()
+        client=cloud.CloudDrive('http://example','secret',stop=stop)
+        with self.assertRaisesRegex(cloud.ProbeError,'巡检已停止'):client.uploads()
     def test_decoder_rejects_bad_lengths(self):
         with self.assertRaises(cloud.ProbeError):cloud.decode(b'\x0a\xff')
     def test_backup_policy_requires_keep(self):

@@ -175,7 +175,7 @@ class CloudBackupCleanup(_PluginBase):
             tasks=load_tasks()
             self._discover(tasks)
             self._save()
-            cloud_factory=lambda:CloudDrive(config['cd2_url'],config['cd2_token'])
+            cloud_factory=lambda:CloudDrive(config['cd2_url'],config['cd2_token'],stop=run_stop)
             cms=CmsIndex(config['cms_database'],config['strm_root'],config['cms_url'],config['cloud_root'])
             hr=NexusHr(config['absence_confirmed_sites'])
             interval=max(5,int(config['interval']))*60
@@ -187,6 +187,7 @@ class CloudBackupCleanup(_PluginBase):
                 if job['hash'] in handled:
                     continue
                 group=group_for(tasks,job['hash']);handled.update(t.hash for t in group)
+                job['group_count']=len(group)
                 checked+=1;job['checked_at']=time.time();job['next_check']=time.time()+interval
                 try:
                     if job.get('journal') and job['journal'].get('remove_requested'):
@@ -260,9 +261,17 @@ class CloudBackupCleanup(_PluginBase):
         jobs=snapshot.get('jobs',{})
         for job in sorted(jobs.values(),key=lambda j:j.get('checked_at',0),reverse=True)[:200]:
             when=job.get('next_check')
-            rows.append({'component':'tr','content':[{'component':'td','text':label(x)} for x in (
-                job['title'],job['hash'][:12],job.get('status','等待巡检'),
-                datetime.fromtimestamp(when).strftime('%m-%d %H:%M') if when and not job.get('completed_at') else '—')]})
+            hr_items=job.get('inspection',{}).get('hr',[])
+            cells=[{'component':'td','text':label(x)} for x in (
+                job['title'],job['hash'][:12],job.get('group_count',len(hr_items) or '—'),job.get('status','等待巡检'),
+                datetime.fromtimestamp(when).strftime('%m-%d %H:%M') if when and not job.get('completed_at') else '—')]
+            details=[]
+            for item in hr_items:
+                name=(item.get('site') or '来源未知')+' · '+item.get('owner','').rsplit(':',1)[-1][:8]
+                stamp=datetime.fromtimestamp(item['checked_at']).strftime('%m-%d %H:%M') if item.get('checked_at') else ''
+                details.append({'component':'li','text':label(name+'：'+item.get('reason','')+' '+stamp)})
+            cells.append({'component':'td','content':[{'component':'ul','content':details}]} if details else {'component':'td','text':'尚未检查'})
+            rows.append({'component':'tr','content':cells})
         mode='自动清理' if self._config.get('auto_delete') else '只读核查'
         result=[{'component':'VAlert','props':{'type':'info','variant':'tonal','text':f'{mode} · 共 {len(jobs)} 条记录'+(' · 巡检中' if snapshot.get('running') else '')}}]
         index_available=Path(self._config['cms_database']).is_file()
@@ -271,6 +280,6 @@ class CloudBackupCleanup(_PluginBase):
         if snapshot.get('last_error'):
             result.append({'component':'VAlert','props':{'type':'error','text':label(snapshot['last_error'])}})
         result.append({'component':'VTable','content':[
-            {'component':'thead','content':[{'component':'tr','content':[{'component':'th','text':x} for x in ('资源','种子','当前状态','下次检查')]}]},
+            {'component':'thead','content':[{'component':'tr','content':[{'component':'th','text':x} for x in ('资源','种子','关联数','当前状态','下次检查','最近HR核验')]}]},
             {'component':'tbody','content':rows}]})
         return result
