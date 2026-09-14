@@ -48,9 +48,12 @@ def parse_page(html, wanted_id):
     for a in soup.find_all('a'):
         label = a.get_text(' ', strip=True)
         href=a.get('href','')
-        path=urllib.parse.urlparse(href).path
+        target=urllib.parse.urlparse(href)
+        path=target.path
+        query=urllib.parse.parse_qs(target.query)
         hr_navigation=path.rsplit('/',1)[-1]=='myhr.php' or (not path and href.startswith('?'))
-        if hr_navigation and (label in ('已达标', '未达标', '全部') or label.lower() in ('next', 'next >') or '下一页' in label):
+        pagination='page' in query and all(x.isdigit() for x in query['page'])
+        if hr_navigation and (pagination or label in ('已达标', '未达标', '全部') or label.lower().startswith('next') or '下一页' in label or '下页' in label):
             links.append((label,href))
     has_other_rows = any(is_torrent_link(a) and torrent_id(a.get('href','')) for a in table.find_all('a'))
     empty = bool(re.search(r'没有|暂无|森马|no (?:records|torrents|results)', table.get_text(' ', strip=True), re.I))

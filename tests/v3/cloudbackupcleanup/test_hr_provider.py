@@ -59,6 +59,14 @@ class HrProviderTests(unittest.TestCase):
     def test_incomplete_pagination_never_clears(self):
         self.pages['https://site.test/myhr.php?status=pending']=EMPTY+'<a href="myhr.php?page=2">下一页</a>'
         self.assertEqual(self.check(['site.test'],limit=3).state,'unknown')
+    def test_numeric_page_link_is_read_before_clearance(self):
+        self.pages['https://site.test/myhr.php?status=pending']=EMPTY+'<a href="myhr.php?status=pending&page=2">2</a>'
+        self.pages['https://site.test/myhr.php?status=pending&page=2']=ROW
+        self.assertEqual(self.check(['site.test']).state,'incomplete')
+    def test_numeric_page_beyond_limit_is_unknown(self):
+        self.pages['https://site.test/myhr.php?status=pending']=EMPTY+'<a href="myhr.php?status=pending&page=2">2</a>'
+        self.pages['https://site.test/myhr.php?status=pending&page=2']=EMPTY
+        self.assertEqual(self.check(['site.test'],limit=3).state,'unknown')
     def test_network_failure_is_not_no_hr(self):
         self.pages['https://site.test/myhr.php?status=done']=TimeoutError()
         self.assertEqual(self.check(['site.test']).state,'unknown')
