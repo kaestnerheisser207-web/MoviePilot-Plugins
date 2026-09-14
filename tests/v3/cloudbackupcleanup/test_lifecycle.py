@@ -55,6 +55,8 @@ class LifecycleTests(unittest.TestCase):
         select=next(x for x in walk(form) if x.get('props',{}).get('model')=='sites')
         self.assertEqual(select['props']['items'],[{'title':'彩虹岛','value':4},{'title':'站点 99（MP 中已移除）','value':99}])
         self.assertTrue(select['props']['multiple']);self.assertNotIn('domain',json.dumps(form))
+        self.assertIs(select['props']['mobileLayout'],False)
+        self.assertTrue(all(x['props'].get('mobileLayout') is False for x in walk(form) if x['component'] in ('VTextField','VTextarea')))
     def test_fresh_revalidation_honors_current_site_selection(self):
         from cloudbackupcleanup.hr import HrResult
         h='a'*40;url='https://site.test/details.php?id=123'

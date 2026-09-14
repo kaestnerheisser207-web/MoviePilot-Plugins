@@ -12,7 +12,7 @@ def node(component, text=None, content=None, **props):
 
 def field(model,label,hint='',component='VTextField',**props):
     return node(component,model=model,label=label,variant='outlined',density='comfortable',
-                hint=hint,**{'persistent-hint':bool(hint)},**props)
+                hint=hint,**{'persistent-hint':bool(hint),'mobileLayout':False},**props)
 
 
 def col(child,md=6):
