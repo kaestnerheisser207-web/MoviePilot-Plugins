@@ -23,6 +23,15 @@ cmsmod=importlib.import_module('cloudbackupcleanup.cms')
 
 
 class WireTests(unittest.TestCase):
+    def test_link_observer_blocks_even_with_passive_directory_exclusion(self):
+        config={'enabled':True,'monitor_dirs':'/video/movie','exclude_dirs':'/video/movie'}
+        with self.assertRaisesRegex(cloud.ProbeError,'监控重叠'):
+            engine.check_delete_observer(['/video/movie/test/a.mkv'],config)
+    def test_link_observer_allows_unmonitored_or_explicit_keyword_exclusion(self):
+        config={'enabled':True,'monitor_dirs':'/video/movie','exclude_keywords':'CodexCleanupTest'}
+        engine.check_delete_observer(['/video/test/a.mkv'],config)
+        engine.check_delete_observer(['/video/movie/CodexCleanupTest/a.mkv'],config)
+        engine.check_delete_observer(['/video/movie/a.mkv'],{'enabled':False})
     def test_truncated_frames_are_not_success(self):
         for value in (b'',b'\x00',b'\x00'+struct.pack('>I',4)+b'x'):
             with self.subTest(value=value),self.assertRaises(cloud.ProbeError):cloud.frames(value)

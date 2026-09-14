@@ -9,6 +9,21 @@ VIDEO = {'.mkv','.mp4','.m4v','.avi','.ts','.m2ts','.mov','.wmv','.mpg','.mpeg',
 ALLOWED_HR = {'complete','no_hr'}
 
 
+def check_delete_observer(paths, config):
+    """An external unlink watcher can delete beyond this verified plan."""
+    if not config or not config.get('enabled'):
+        return
+    monitored = [Path(p.strip()) for p in str(config.get('monitor_dirs') or '').splitlines() if p.strip()]
+    excluded = [p for p in str(config.get('exclude_keywords') or '').splitlines() if p]
+    # RemoveLink's exclude_dirs protects passive targets only; it does not
+    # suppress a source deletion event or its torrent/history side effects.
+    for value in paths:
+        if any(keyword in str(value) for keyword in excluded):
+            continue
+        if any(Path(value).is_relative_to(root) for root in monitored):
+            raise ProbeError('清理暂停：清理硬链接插件正在监控待删路径，可能触发额外删除；请先解决监控重叠')
+
+
 def check_scope(plan, allowed_hashes):
     if allowed_hashes and any(x['hash'].lower() not in allowed_hashes for x in plan.get('owners',[])):
         raise ProbeError('关联种子超出限定 hash 范围，已保留；需明确扩大范围后再清理')

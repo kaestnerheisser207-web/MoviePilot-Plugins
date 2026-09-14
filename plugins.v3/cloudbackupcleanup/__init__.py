@@ -14,7 +14,7 @@ from app.sdk.queries import list_transfer_history
 from .cloud import CloudDrive, ProbeError
 from .cms import CmsIndex
 from .downloaders import from_mp
-from .engine import check_scope, execute_plan, group_for, plan_group
+from .engine import check_delete_observer, check_scope, execute_plan, group_for, plan_group
 from .hr import NexusHr
 
 
@@ -33,7 +33,7 @@ class CloudBackupCleanup(_PluginBase):
     plugin_name = '云端备份后清理'
     plugin_desc = '定期核验115备份、CMS同步及HR状态，默认只读核查。'
     plugin_icon = 'CloudDrive_A.png'
-    plugin_version = '0.1.0'
+    plugin_version = '0.1.1'
     plugin_author = 'kaestnerheisser207-web'
     author_url = 'https://github.com/kaestnerheisser207-web'
     plugin_config_prefix = 'cloudbackupcleanup_'
@@ -210,6 +210,7 @@ class CloudBackupCleanup(_PluginBase):
                             job['status']='可清理（只读核查）';continue
                         job['plan']=plan;job['journal']={};self._save()
                     def verify_cloud(p):
+                        check_delete_observer(p['paths'],self.get_config('RemoveLink'))
                         cloud=cloud_factory();blocked=cloud.uploads();cloud.assert_keep_cloud(p['logical_paths'])
                         for e in p['evidence']:
                             remote=cloud.get_file(e['remote_path'])
