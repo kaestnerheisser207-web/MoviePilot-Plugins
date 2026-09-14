@@ -2,7 +2,7 @@
   "CloudBackupCleanup": {
     "name": "云端备份后清理",
     "description": "核验115备份、CMS同步及HR状态，定期检查并按条件清理本地媒体。默认只读核查。",
-    "version": "0.1.1",
+    "version": "0.1.2",
     "icon": "CloudDrive_A.png",
     "author": "kaestnerheisser207-web",
     "level": 1,

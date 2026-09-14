@@ -32,6 +32,13 @@ def load_entry():
 
 class LifecycleTests(unittest.TestCase):
     def setUp(self):self.entry=load_entry();self.plugin=self.entry.CloudBackupCleanup()
+    def test_manual_transfer_without_hash_discovered_by_current_source(self):
+        self.plugin.init_plugin({'enabled':True})
+        task=types.SimpleNamespace(client='tr',hash='test',generation=123,completed_at=123,wanted=['/video/test/a.mp4'])
+        def history(**kw):
+            return types.SimpleNamespace(items=[types.SimpleNamespace(title='manual test')] if kw['filters'].get('src')=='/video/test/a.mp4' else [])
+        with patch.object(self.entry,'list_transfer_history',side_effect=history):self.plugin._discover([task])
+        self.assertEqual(self.plugin._state['jobs']['tr:test:123']['title'],'manual test')
     def test_non_boolean_value_cannot_enable_deletion(self):
         self.plugin.init_plugin({'auto_delete':'true','enabled':'true'})
         self.assertFalse(self.plugin.get_state());self.assertIs(self.plugin._config['auto_delete'],False)

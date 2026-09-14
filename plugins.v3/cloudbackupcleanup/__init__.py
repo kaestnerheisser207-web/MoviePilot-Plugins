@@ -14,7 +14,7 @@ from app.sdk.queries import list_transfer_history
 from .cloud import CloudDrive, ProbeError
 from .cms import CmsIndex
 from .downloaders import from_mp
-from .engine import check_delete_observer, check_scope, execute_plan, group_for, plan_group
+from .engine import VIDEO, check_delete_observer, check_scope, execute_plan, group_for, plan_group
 from .hr import NexusHr
 
 
@@ -33,7 +33,7 @@ class CloudBackupCleanup(_PluginBase):
     plugin_name = '云端备份后清理'
     plugin_desc = '定期核验115备份、CMS同步及HR状态，默认只读核查。'
     plugin_icon = 'CloudDrive_A.png'
-    plugin_version = '0.1.1'
+    plugin_version = '0.1.2'
     plugin_author = 'kaestnerheisser207-web'
     author_url = 'https://github.com/kaestnerheisser207-web'
     plugin_config_prefix = 'cloudbackupcleanup_'
@@ -146,8 +146,16 @@ class CloudBackupCleanup(_PluginBase):
             if ident in self._state['jobs']:
                 continue
             result = list_transfer_history(filters={'download_hash':task.hash,'status':True},page={'page':1,'count':1})
-            if result.items:
-                self._state['jobs'][ident]={'hash':task.hash,'title':result.items[0].title or task.hash[:12],
+            records=result.items
+            if not records:
+                # MP manual transfers can have no download_hash. Discovery may
+                # use the current torrent's exact source path; plan_group still
+                # verifies every selected file and its hardlink identity.
+                source=next((p for p in task.wanted if Path(p).suffix.lower() in VIDEO),None)
+                if source:
+                    records=list_transfer_history(filters={'src':source,'status':True},page={'page':1,'count':1}).items
+            if records:
+                self._state['jobs'][ident]={'hash':task.hash,'title':records[0].title or task.hash[:12],
                     'client':task.client,'generation':task.generation,'status':'等待巡检','next_check':0,'created_at':time.time()}
         self._state['discovery_cursor']=(cursor+min(100,len(candidates))) % max(1,len(candidates))
 
