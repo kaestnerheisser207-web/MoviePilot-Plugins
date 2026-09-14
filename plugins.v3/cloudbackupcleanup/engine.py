@@ -9,6 +9,11 @@ VIDEO = {'.mkv','.mp4','.m4v','.avi','.ts','.m2ts','.mov','.wmv','.mpg','.mpeg',
 ALLOWED_HR = {'complete','no_hr'}
 
 
+def check_scope(plan, allowed_hashes):
+    if allowed_hashes and any(x['hash'].lower() not in allowed_hashes for x in plan.get('owners',[])):
+        raise ProbeError('关联种子超出限定 hash 范围，已保留；需明确扩大范围后再清理')
+
+
 def owner(task):
     return task.client + ':' + task.hash
 
@@ -129,12 +134,13 @@ def check_shared(plan, tasks):
                 raise ProbeError('种子任务的完成度或文件选择发生变化')
 
 
-def execute_plan(plan, journal, clients, load_tasks, verify_cloud, roots, save, stop=None):
+def execute_plan(plan, journal, clients, load_tasks, verify_cloud, roots, save, stop=None, allowed_hashes=None):
     """Resume a persisted plan. No generic retry of an uncertain delete request."""
     if not plan.get('ready') or not plan.get('hr') or any(c.get('state') not in ALLOWED_HR for c in plan['hr']):
         raise ProbeError('没有完整的 HR 放行证据')
     if not plan.get('paths') or not plan.get('owners'):
         raise ProbeError('清理计划为空')
+    check_scope(plan,allowed_hashes)
     def check_stop():
         if stop and stop.is_set():
             raise ProbeError('巡检已停止，未完成的清理将保留记录')

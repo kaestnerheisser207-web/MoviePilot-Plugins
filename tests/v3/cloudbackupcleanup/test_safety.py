@@ -156,6 +156,12 @@ class CleanupTests(MediaFixture,unittest.TestCase):
         plan,journal=self.prepare();plan['hr'][0]['state']='unknown'
         with self.assertRaises(cloud.ProbeError):self.execute(plan,journal)
         self.assertTrue(self.src.exists());self.assertEqual(len(self.tasks),1)
+    def test_cross_seed_outside_hash_scope_is_not_deleted(self):
+        self.tasks.append(downloaders.Task('tr','cross',True,[str(self.src)],[str(self.src)],generation=124))
+        plan,journal=self.prepare()
+        with self.assertRaisesRegex(cloud.ProbeError,'限定 hash'):
+            engine.execute_plan(plan,journal,self.clients,lambda:list(self.tasks),lambda p:None,[str(self.root)],self.save,allowed_hashes={'hash'})
+        self.assertEqual(len(self.tasks),2);self.assertTrue(self.src.exists())
     def test_new_shared_task_prevents_delete(self):
         plan,journal=self.prepare();self.tasks.append(downloaders.Task('tr','new',True,[str(self.src)],[str(self.src)],generation=55))
         with self.assertRaises(cloud.ProbeError):self.execute(plan,journal)

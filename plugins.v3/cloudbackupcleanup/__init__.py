@@ -14,7 +14,7 @@ from app.sdk.queries import list_transfer_history
 from .cloud import CloudDrive, ProbeError
 from .cms import CmsIndex
 from .downloaders import from_mp
-from .engine import execute_plan, group_for, plan_group
+from .engine import check_scope, execute_plan, group_for, plan_group
 from .hr import NexusHr
 
 
@@ -179,6 +179,7 @@ class CloudBackupCleanup(_PluginBase):
             cms=CmsIndex(config['cms_database'],config['strm_root'],config['cms_url'],config['cloud_root'])
             hr=NexusHr(config['absence_confirmed_sites'])
             interval=max(5,int(config['interval']))*60
+            allowed_hashes={x.strip().lower() for x in str(config.get('hashes','')).splitlines() if x.strip()}
             due=sorted(((key,j) for key,j in self._state['jobs'].items() if not j.get('completed_at') and (force or j.get('next_check',0)<=time.time())),key=lambda x:x[1].get('next_check',0))
             checked=0;handled=set()
             for key,job in due:
@@ -199,6 +200,7 @@ class CloudBackupCleanup(_PluginBase):
                         job['status']=plan['reason'];job['inspection']=plan
                         if not plan['ready']:
                             continue
+                        check_scope(plan,allowed_hashes)
                         if not config.get('auto_delete'):
                             job['status']='可清理（只读核查）';continue
                         job['plan']=plan;job['journal']={};self._save()
@@ -209,7 +211,7 @@ class CloudBackupCleanup(_PluginBase):
                             if e['remote_path'] in blocked or not remote or (remote.id,remote.size,remote.sha1)!=(e['remote_id'],e['size'],e['sha1']):
                                 raise ProbeError('清理前云端文件状态变化')
                             cms.verify(remote,e['sha1'])
-                    execute_plan(plan,job['journal'],clients,load_tasks,verify_cloud,config['allowed_roots'],self._save,run_stop)
+                    execute_plan(plan,job['journal'],clients,load_tasks,verify_cloud,config['allowed_roots'],self._save,run_stop,allowed_hashes)
                     job['status']='已清理核验通过的视频';job['completed_at']=time.time()
                     for other in self._state['jobs'].values():
                         if other is not job and any(other.get('client')==x['client'] and other['hash']==x['hash'] and other.get('generation')==x['generation'] for x in plan['owners']):
