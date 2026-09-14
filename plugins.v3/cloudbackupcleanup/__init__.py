@@ -33,7 +33,7 @@ class CloudBackupCleanup(_PluginBase):
     plugin_name = '云端备份后清理'
     plugin_desc = '定期核验115备份、CMS同步及HR状态，默认只读核查。'
     plugin_icon = 'CloudDrive_A.png'
-    plugin_version = '0.1.2'
+    plugin_version = '0.1.3'
     plugin_author = 'kaestnerheisser207-web'
     author_url = 'https://github.com/kaestnerheisser207-web'
     plugin_config_prefix = 'cloudbackupcleanup_'
@@ -280,8 +280,11 @@ class CloudBackupCleanup(_PluginBase):
         rows=[]
         snapshot=self.get_data('state') or self._state
         jobs=snapshot.get('jobs',{})
+        next_fire=self._interval_trigger.get_next_fire_time(None,datetime.now(timezone.utc)) if self.get_state() and self._interval_trigger else None
         for job in sorted(jobs.values(),key=lambda j:j.get('checked_at',0),reverse=True)[:200]:
-            when=job.get('next_check')
+            # A saved estimate belongs to the previous schedule after a config
+            # reload. Display the currently registered trigger's next tick.
+            when=next_fire.timestamp() if next_fire else None
             hr_items=job.get('inspection',{}).get('hr',[])
             cells=[{'component':'td','text':label(x)} for x in (
                 job['title'],job['hash'][:12],job.get('group_count',len(hr_items) or '—'),job.get('status','等待巡检'),

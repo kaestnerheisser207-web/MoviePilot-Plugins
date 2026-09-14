@@ -39,6 +39,15 @@ class LifecycleTests(unittest.TestCase):
             return types.SimpleNamespace(items=[types.SimpleNamespace(title='manual test')] if kw['filters'].get('src')=='/video/test/a.mp4' else [])
         with patch.object(self.entry,'list_transfer_history',side_effect=history):self.plugin._discover([task])
         self.assertEqual(self.plugin._state['jobs']['tr:test:123']['title'],'manual test')
+    def test_page_uses_current_schedule_instead_of_saved_estimate(self):
+        import json
+        self.plugin.saved['state']={'jobs':{'test':{'hash':'test','title':'test','next_check':1}}}
+        self.plugin.init_plugin({'enabled':True})
+        expected=self.entry.datetime(2030,1,2,3,4)
+        self.plugin._interval_trigger=types.SimpleNamespace(get_next_fire_time=lambda *args:expected)
+        page=json.dumps(self.plugin.get_page(),ensure_ascii=False)
+        self.assertIn(expected.strftime('%m-%d %H:%M'),page)
+        self.assertNotIn('01-01 08:00',page)
     def test_non_boolean_value_cannot_enable_deletion(self):
         self.plugin.init_plugin({'auto_delete':'true','enabled':'true'})
         self.assertFalse(self.plugin.get_state());self.assertIs(self.plugin._config['auto_delete'],False)
