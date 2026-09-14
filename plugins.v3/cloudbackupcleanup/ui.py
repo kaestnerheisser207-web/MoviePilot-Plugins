@@ -135,7 +135,7 @@ def page(snapshot,config,next_check,index_available,site_names):
                 key=auxiliary['client']+':'+auxiliary['hash'];hr=auxiliary_items.get(key)
                 text=(auxiliary.get('site_name') or '站点待识别')+' · '+auxiliary['hash'][:12]
                 aux_details.append(node('div',content=[node('div',text,**{'class':'text-body-2 font-weight-medium'}),
-                    node('div',(hr.get('reason') if hr else '等待原始下载通过；尚未查询个人 HR'),**{'class':'text-body-2 text-medium-emphasis mt-1'})],**{'class':'py-3'}))
+                    node('div',(hr.get('reason') if hr else '已识别为辅种；待原始种子 HR 核验通过后，再检查此辅种的个人 HR'),**{'class':'text-body-2 text-medium-emphasis mt-1'})],**{'class':'py-3'}))
             content.append(node('VExpansionPanels',variant='accordion',**{'class':'mt-3'},content=[
                 node('VExpansionPanel',elevation=0,content=[node('VExpansionPanelTitle',f'辅种任务 · {len(auxiliaries)} 条'),
                     node('VExpansionPanelText',content=aux_details)])]))
