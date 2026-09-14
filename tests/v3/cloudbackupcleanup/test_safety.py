@@ -113,6 +113,12 @@ class PlanningTests(MediaFixture,unittest.TestCase):
             self.remote=remote
             with self.assertRaisesRegex(cloud.ProbeError,'等待上传'):self.plan()
         self.assertEqual(self.hr_calls,0)
+    def test_source_lookup_is_also_deferred_until_cloud_and_cms_ready(self):
+        self.remote=None
+        calls=[]
+        with self.assertRaises(cloud.ProbeError):
+            engine.plan_group('hash',self.tasks,self.clients,self.find,self.cloud_factory,self.cms,self.hr,self.config,self.cache,threading.Event(),source_lookup=lambda t:calls.append(t))
+        self.assertEqual(calls,[])
     def test_active_upload_never_queries_hr(self):
         self.uploads={'/115open/a.mkv'}
         with self.assertRaisesRegex(cloud.ProbeError,'等待上传'):self.plan()
@@ -161,12 +167,47 @@ class CleanupTests(MediaFixture,unittest.TestCase):
         return plan,journal
     def save(self):self.saved+=1
     def execute(self,plan,journal,save=None):
-        engine.execute_plan(plan,journal,self.clients,lambda:list(self.tasks),lambda p:None,[str(self.root)],save or self.save)
+        engine.execute_plan(plan,journal,self.clients,lambda:list(self.tasks),lambda p:None,[str(self.root)],save or self.save,verify_hr=lambda p:None)
     def test_exact_cleanup_leaves_unrelated_files(self):
         extra=self.src.parent/'keep.txt';extra.write_text('original ancillary data')
         plan,journal=self.prepare();self.execute(plan,journal)
         self.assertFalse(self.src.exists());self.assertFalse(self.dst.exists());self.assertTrue(extra.exists())
         self.assertIn('completed_at',journal)
+    def test_fresh_hr_is_required_even_for_a_cached_ready_plan(self):
+        plan,journal=self.prepare()
+        with self.assertRaisesRegex(cloud.ProbeError,'缺少清理前'):
+            engine.execute_plan(plan,journal,self.clients,lambda:self.tasks,lambda p:None,[str(self.root)],self.save)
+        self.assertTrue(self.src.exists());self.assertEqual(len(self.tasks),1)
+    def test_fresh_hr_failure_blocks_all_mutations(self):
+        plan,journal=self.prepare()
+        def fail(p):raise cloud.ProbeError('station no longer confirms clearance')
+        with self.assertRaisesRegex(cloud.ProbeError,'station'):
+            engine.execute_plan(plan,journal,self.clients,lambda:self.tasks,lambda p:None,[str(self.root)],self.save,verify_hr=fail)
+        self.assertTrue(self.src.exists());self.assertEqual(len(self.tasks),1)
+        self.assertFalse(journal.get('remove_requested'))
+    def test_hr_revocation_after_task_removal_keeps_files_and_can_resume(self):
+        plan,journal=self.prepare();calls=[]
+        def check(p):
+            calls.append(1)
+            if len(calls)>=3:raise cloud.ProbeError('HR query unavailable')
+        with self.assertRaisesRegex(cloud.ProbeError,'HR query'):
+            engine.execute_plan(plan,journal,self.clients,lambda:list(self.tasks),lambda p:None,[str(self.root)],self.save,verify_hr=check)
+        self.assertEqual(self.tasks,[]);self.assertTrue(self.src.exists());self.assertTrue(self.dst.exists())
+        self.execute(plan,journal)
+        self.assertEqual(len(journal['remove_requested']),1);self.assertFalse(self.src.exists())
+    def test_new_share_during_final_hr_query_prevents_unlink(self):
+        plan,journal=self.prepare();calls=[]
+        def check(p):
+            calls.append(1)
+            if len(calls)==3:self.tasks.append(downloaders.Task('tr','new',True,[str(self.src)],[str(self.src)],generation=999))
+        with self.assertRaisesRegex(cloud.ProbeError,'新的共享'):
+            engine.execute_plan(plan,journal,self.clients,lambda:list(self.tasks),lambda p:None,[str(self.root)],self.save,verify_hr=check)
+        self.assertTrue(self.src.exists());self.assertTrue(self.dst.exists())
+    def test_cancellation_during_fresh_hr_query_prevents_delete(self):
+        plan,journal=self.prepare();stop=threading.Event()
+        with self.assertRaisesRegex(cloud.ProbeError,'巡检已停止'):
+            engine.execute_plan(plan,journal,self.clients,lambda:self.tasks,lambda p:None,[str(self.root)],self.save,stop=stop,verify_hr=lambda p:stop.set())
+        self.assertEqual(len(self.tasks),1);self.assertTrue(self.src.exists())
     def test_unknown_clearance_cannot_execute(self):
         plan,journal=self.prepare();plan['hr'][0]['state']='unknown'
         with self.assertRaises(cloud.ProbeError):self.execute(plan,journal)
@@ -175,7 +216,7 @@ class CleanupTests(MediaFixture,unittest.TestCase):
         self.tasks.append(downloaders.Task('tr','cross',True,[str(self.src)],[str(self.src)],generation=124))
         plan,journal=self.prepare()
         with self.assertRaisesRegex(cloud.ProbeError,'限定 hash'):
-            engine.execute_plan(plan,journal,self.clients,lambda:list(self.tasks),lambda p:None,[str(self.root)],self.save,allowed_hashes={'hash'})
+            engine.execute_plan(plan,journal,self.clients,lambda:list(self.tasks),lambda p:None,[str(self.root)],self.save,allowed_hashes={'hash'},verify_hr=lambda p:None)
         self.assertEqual(len(self.tasks),2);self.assertTrue(self.src.exists())
     def test_new_shared_task_prevents_delete(self):
         plan,journal=self.prepare();self.tasks.append(downloaders.Task('tr','new',True,[str(self.src)],[str(self.src)],generation=55))
@@ -203,7 +244,7 @@ class CleanupTests(MediaFixture,unittest.TestCase):
     def test_disabled_worker_stops_before_mutation(self):
         plan,journal=self.prepare();stop=threading.Event();stop.set()
         with self.assertRaisesRegex(cloud.ProbeError,'巡检已停止'):
-            engine.execute_plan(plan,journal,self.clients,lambda:list(self.tasks),lambda p:None,[str(self.root)],self.save,stop)
+            engine.execute_plan(plan,journal,self.clients,lambda:list(self.tasks),lambda p:None,[str(self.root)],self.save,stop,verify_hr=lambda p:None)
         self.assertEqual(len(self.tasks),1);self.assertTrue(self.src.exists())
     def test_ambiguous_delete_is_not_retried(self):
         plan,journal=self.prepare();calls=[]

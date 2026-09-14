@@ -9,6 +9,16 @@ VIDEO = {'.mkv','.mp4','.m4v','.avi','.ts','.m2ts','.mov','.wmv','.mpg','.mpeg',
 ALLOWED_HR = {'complete','no_hr'}
 
 
+def hr_clearance(task_owner, source_url, result):
+    try:site=urllib.parse.urlparse(source_url).hostname or ''
+    except ValueError:site=''
+    data={'owner':task_owner,'site':site,'source_url':source_url,'state':result.state,'reason':result.reason,'checked_at':result.checked_at}
+    for key in ('required_seed_seconds','seeded_seconds','remaining_seed_seconds','deadline_at','deadline_text','remaining_seed_text','basis','proof_version'):
+        value=getattr(result,key,None)
+        if value is not None and value!='':data[key]=value
+    return data
+
+
 def check_delete_observer(paths, config):
     """An external unlink watcher can delete beyond this verified plan."""
     if not config or not config.get('enabled'):
@@ -61,7 +71,7 @@ def cloud_path(local, mappings):
     return str(PurePosixPath(mapping['cloud']) / relative.as_posix()), str(PurePosixPath(mapping.get('cd2_source') or mapping['local']) / relative.as_posix())
 
 
-def plan_group(seed_hash, tasks, clients, find_transfers, cloud_factory, cms, hr, config, cache, stop):
+def plan_group(seed_hash, tasks, clients, find_transfers, cloud_factory, cms, hr, config, cache, stop, source_lookup=None):
     group = group_for(tasks, seed_hash)
     if not group:
         raise ProbeError('下载器中没有该任务；不会依据旧历史删除文件')
@@ -120,17 +130,12 @@ def plan_group(seed_hash, tasks, clients, find_transfers, cloud_factory, cms, hr
     for task in group:
         if stop.is_set():
             raise ProbeError('巡检已停止')
-        source_url=clients[task.client].source(task)
+        source_url=source_lookup(task) if source_lookup else clients[task.client].source(task)
         result = hr.check(source_url)
-        try:site=urllib.parse.urlparse(source_url).hostname or ''
-        except ValueError:site=''
-        clearance={'owner':owner(task),'site':site,'state':result.state,'reason':result.reason,'checked_at':result.checked_at}
-        for key in ('required_seed_seconds','seeded_seconds','remaining_seed_seconds','deadline_at','deadline_text'):
-            value=getattr(result,key,None)
-            if value is not None and value!='':clearance[key]=value
-        clearances.append(clearance)
-    if any(c['state']=='incomplete' for c in clearances):
-        return {'ready':False,'reason':'等待 HR：关联种子尚未全部达标','hr':clearances,'cloud_verified_at':verified_at,'evidence':evidence}
+        clearances.append(hr_clearance(owner(task),source_url,result))
+    if any(c['state'] in ('incomplete','overdue') for c in clearances):
+        reason='HR 已逾期但未达标，继续保留' if any(c['state']=='overdue' for c in clearances) else '等待 HR：关联种子尚未全部达标'
+        return {'ready':False,'reason':reason,'hr':clearances,'cloud_verified_at':verified_at,'evidence':evidence}
     if any(c['state'] not in ALLOWED_HR for c in clearances):
         return {'ready':False,'reason':'HR 无法确认：'+next(c['reason'] for c in clearances if c['state'] not in ALLOWED_HR),'hr':clearances,'cloud_verified_at':verified_at,'evidence':evidence}
     return {'ready':True,'reason':'备份、CMS与HR均已核验','owners':[{'client':t.client,'hash':t.hash,'generation':t.generation,'wanted':list(t.wanted)} for t in group],
@@ -153,17 +158,19 @@ def check_shared(plan, tasks):
                 raise ProbeError('种子任务的完成度或文件选择发生变化')
 
 
-def execute_plan(plan, journal, clients, load_tasks, verify_cloud, roots, save, stop=None, allowed_hashes=None):
+def execute_plan(plan, journal, clients, load_tasks, verify_cloud, roots, save, stop=None, allowed_hashes=None, verify_hr=None):
     """Resume a persisted plan. No generic retry of an uncertain delete request."""
     if not plan.get('ready') or not plan.get('hr') or any(c.get('state') not in ALLOWED_HR for c in plan['hr']):
         raise ProbeError('没有完整的 HR 放行证据')
     if not plan.get('paths') or not plan.get('owners'):
         raise ProbeError('清理计划为空')
+    if verify_hr is None:
+        raise ProbeError('缺少清理前站点 HR 复核，不允许使用缓存放行')
     check_scope(plan,allowed_hashes)
     def check_stop():
         if stop and stop.is_set():
             raise ProbeError('巡检已停止，未完成的清理将保留记录')
-    check_stop();verify_cloud(plan)
+    check_stop();verify_cloud(plan);check_stop();verify_hr(plan);check_stop()
     tasks = load_tasks()
     check_shared(plan,tasks)
     for path, expected in plan['paths'].items():
@@ -184,6 +191,11 @@ def execute_plan(plan, journal, clients, load_tasks, verify_cloud, roots, save, 
             continue
         if key in requested:
             raise ProbeError('上次删除结果未确认且任务仍存在，需要检查后人工重试')
+        # Site evidence is refreshed for every mutation, including resumed runs.
+        verify_cloud(plan);check_stop();verify_hr(plan);check_stop()
+        tasks=load_tasks();check_shared(plan,tasks)
+        if not any(owner(t)==key for t in tasks):
+            raise ProbeError('任务在复核期间被外部移除，需要重新核对')
         requested.append(key);save()
         clients[item['client']].remove_task_only(item['hash'])
         tasks = load_tasks()
@@ -201,6 +213,8 @@ def execute_plan(plan, journal, clients, load_tasks, verify_cloud, roots, save, 
         # pinning and file identity validation happen in unlink_verified().
         check_shared(plan,load_tasks())
         if path not in finished:
+            verify_cloud(plan);check_stop();verify_hr(plan);check_stop()
+            check_shared(plan,load_tasks())
             unlink_verified(path,expected,roots)
             finished.append(path);save()
     journal['completed_at']=time.time();save()

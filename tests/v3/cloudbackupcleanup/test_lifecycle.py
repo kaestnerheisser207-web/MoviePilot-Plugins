@@ -11,14 +11,18 @@ class Base:
     def get_data(self,key):return copy.deepcopy(self.saved.get(key))
     def save_data(self,key,value):self.saved[key]=copy.deepcopy(value)
     def update_config(self,value):self.saved_config=copy.deepcopy(value);return True
+    def get_config(self,key=None):return {}
 
 
 def load_entry():
     modules={}
-    for name in ('app.plugins','app.sdk.logging','app.sdk.queries','apscheduler.triggers.date','apscheduler.triggers.interval'):
+    for name in ('app.plugins','app.sdk.logging','app.sdk.queries','app.sdk.events','app.schemas.types','apscheduler.triggers.date','apscheduler.triggers.interval'):
         modules[name]=types.ModuleType(name)
     modules['app.plugins']._PluginBase=Base
-    modules['app.sdk.logging'].logger=types.SimpleNamespace(info=lambda *a:None)
+    modules['app.sdk.logging'].logger=types.SimpleNamespace(info=lambda *a:None,warn=lambda *a:None)
+    modules['app.sdk.events'].Event=types.SimpleNamespace
+    modules['app.sdk.events'].eventmanager=types.SimpleNamespace(register=lambda event:lambda func:func)
+    modules['app.schemas.types'].EventType=types.SimpleNamespace(DownloadAdded='DownloadAdded')
     modules['app.sdk.queries'].list_transfer_history=lambda **kw:None
     modules['apscheduler.triggers.date'].DateTrigger=lambda **kw:kw
     modules['apscheduler.triggers.interval'].IntervalTrigger=lambda **kw:types.SimpleNamespace(get_next_fire_time=lambda previous,now:now+timedelta(minutes=kw['minutes']))
@@ -32,6 +36,83 @@ def load_entry():
 
 class LifecycleTests(unittest.TestCase):
     def setUp(self):self.entry=load_entry();self.plugin=self.entry.CloudBackupCleanup()
+    def test_download_event_captures_only_source_without_hash_lock_or_network(self):
+        self.plugin.init_plugin({'enabled':True});h='a'*40
+        event=types.SimpleNamespace(event_data={'hash':h,'downloader':'tr','context':types.SimpleNamespace(torrent_info=types.SimpleNamespace(page_url='https://site.test/details.php?id=123&hit=1&passkey=discard'))})
+        self.plugin._lock.acquire()
+        try:
+            with patch.object(self.entry,'NexusHr') as hr,patch.object(self.entry,'CloudDrive') as cloud:
+                self.plugin.remember_download_source(event);hr.assert_not_called();cloud.assert_not_called()
+        finally:self.plugin._lock.release()
+        self.assertEqual(self.plugin.get_data('source:tr:'+h)['urls'],['https://site.test/details.php?id=123'])
+        task=types.SimpleNamespace(client='tr',hash=h)
+        self.assertEqual(self.plugin._source_for(task,types.SimpleNamespace(source=lambda t:'')),'https://site.test/details.php?id=123')
+    def test_source_conflict_cannot_choose_a_site_silently(self):
+        self.plugin.init_plugin({'enabled':True});h='a'*40
+        self.plugin.save_data('source:tr:'+h,{'urls':['https://site.test/details.php?id=123']})
+        with self.assertRaisesRegex(self.entry.ProbeError,'来源记录存在冲突'):
+            self.plugin._source_for(types.SimpleNamespace(client='tr',hash=h),types.SimpleNamespace(source=lambda t:'https://another.test/details.php?id=456'))
+    def test_readded_download_keeps_original_hr_marker_and_capture_time(self):
+        self.plugin.init_plugin({'enabled':True});h='a'*40
+        data={'hash':h,'downloader':'tr','context':{'torrent_info':{'site':4,'site_name':'Test','page_url':'https://site.test/details.php?id=123','hit_and_run':True}}}
+        with patch.object(self.entry.time,'time',return_value=100):self.plugin.remember_download_source(types.SimpleNamespace(event_data=data))
+        data['context']['torrent_info']['hit_and_run']=False
+        with patch.object(self.entry.time,'time',return_value=200):self.plugin.remember_download_source(types.SimpleNamespace(event_data=data))
+        source=self.plugin.get_data('source:tr:'+h)
+        record=source['histories']['https://site.test/details.php?id=123']
+        self.assertEqual(record['time'],100);self.assertIs(record['hit_and_run'],True)
+        self.assertTrue(source['ever_had_hr'])
+    def test_backfill_cannot_set_personal_clearance(self):
+        import json
+        self.plugin.init_plugin({'source_mappings':json.dumps({'tr:'+'a'*40:{'url':'https://site.test/details.php?id=123','state':'complete'}})})
+        with self.assertRaisesRegex(self.entry.ProbeError,'不能手工设置'):self.plugin._options()
+    def test_migration_keeps_cache_journal_and_retires_old_inspection(self):
+        old={'jobs':{'job':{'hash':'a'*40,'title':'test','inspection':{'ready':True,'hr':[{'state':'no_hr'}]},'plan':{'ready':True},'journal':{'remove_requested':['tr:a']}}},'hash_cache':{'file':{'sha1':'digest'}}}
+        self.plugin.saved['state']=old;self.plugin.init_plugin({'enabled':True})
+        state=self.plugin.get_data('state');job=state['jobs']['job']
+        self.assertEqual(state['hash_cache'],old['hash_cache'])
+        self.assertEqual(job['journal'],old['jobs']['job']['journal'])
+        self.assertEqual(job['inspection'],{});self.assertTrue(job['previous_inspection']['ready'])
+        self.assertEqual(job['personal_hr_state'],'unknown')
+    def test_fresh_site_clearance_is_independent_of_original_hr_marker(self):
+        from cloudbackupcleanup.hr import HrResult
+        h='a'*40;url='https://site.test/details.php?id=123'
+        plan={'ready':True,'owners':[{'client':'tr','hash':h}],'hr':[{'owner':'tr:'+h,'state':'complete','source_url':url}]}
+        job={'original_hit_and_run':True};self.plugin.init_plugin({})
+        with patch.object(self.entry,'NexusHr',return_value=types.SimpleNamespace(check=lambda u:HrResult('complete','site confirmed',10,basis='site_personal_view'))):
+            self.plugin._refresh_hr(plan,job,threading.Event())
+        self.assertTrue(job['original_hit_and_run']);self.assertEqual(plan['hr'][0]['state'],'complete')
+    def test_stale_clearance_and_later_recovery_preserve_journal(self):
+        from cloudbackupcleanup.hr import HrResult
+        h='a'*40;url='https://site.test/details.php?id=123'
+        plan={'ready':True,'owners':[{'client':'tr','hash':h}],'hr':[{'owner':'tr:'+h,'state':'complete','source_url':url}]}
+        job={'journal':{'remove_requested':['tr:'+h]}};self.plugin.init_plugin({})
+        with patch.object(self.entry,'NexusHr',return_value=types.SimpleNamespace(check=lambda u:HrResult('unknown','login expired',10))):
+            with self.assertRaisesRegex(self.entry.ProbeError,'复核未通过'):self.plugin._refresh_hr(plan,job,threading.Event())
+        self.assertEqual(plan['hr'][0]['state'],'complete')
+        self.assertEqual(job['inspection']['hr'][0]['state'],'unknown')
+        self.assertEqual(job['journal']['remove_requested'],['tr:'+h])
+        with patch.object(self.entry,'NexusHr',return_value=types.SimpleNamespace(check=lambda u:HrResult('complete','site confirmed',20,basis='site_personal_view'))):
+            self.plugin._refresh_hr(plan,job,threading.Event())
+        self.assertEqual(plan['hr'][0]['checked_at'],20)
+    def test_legacy_source_mapping_is_scoped_to_client_and_hash(self):
+        import json
+        h='a'*40;self.plugin.init_plugin({'source_mappings':json.dumps({'tr:'+h.upper():'https://site.test/details.php?id=123'})})
+        client=types.SimpleNamespace(source=lambda t:'')
+        self.assertEqual(self.plugin._source_for(types.SimpleNamespace(client='tr',hash=h),client),'https://site.test/details.php?id=123')
+        self.assertEqual(self.plugin._source_for(types.SimpleNamespace(client='qb',hash=h),client),'')
+    def test_disabled_plugin_does_not_capture_new_downloads(self):
+        self.plugin.init_plugin({'enabled':False})
+        self.plugin.remember_download_source(types.SimpleNamespace(event_data={'hash':'a'*40,'downloader':'tr','context':{'torrent_info':{'page_url':'https://site.test/details.php?id=123'}}}))
+        self.assertEqual(self.plugin.saved,{})
+    def test_malformed_download_source_does_not_interrupt_download_event(self):
+        self.plugin.init_plugin({'enabled':True})
+        self.plugin.remember_download_source(types.SimpleNamespace(event_data={'hash':'a'*40,'downloader':'tr','context':{'torrent_info':{'page_url':123}}}))
+        self.assertEqual(self.plugin.saved,{})
+    def test_legacy_source_rejects_download_endpoint(self):
+        import json
+        self.plugin.init_plugin({'source_mappings':json.dumps({'tr:'+'a'*40:'https://site.test/download.php?id=123&passkey=secret'})})
+        with self.assertRaisesRegex(self.entry.ProbeError,'旧任务来源补录'):self.plugin._options()
     def test_manual_transfer_without_hash_discovered_by_current_source(self):
         self.plugin.init_plugin({'enabled':True})
         task=types.SimpleNamespace(client='tr',hash='test',generation=123,completed_at=123,wanted=['/video/test/a.mp4'])

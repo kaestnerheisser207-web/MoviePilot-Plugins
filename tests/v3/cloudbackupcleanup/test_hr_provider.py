@@ -62,8 +62,8 @@ class HrProviderTests(unittest.TestCase):
         self.pages['https://site.test/myhr.php?status=done']=ROW
         self.pages['https://site.test/myhr.php?status=pending']=ROW
         self.assertEqual(self.check().state,'incomplete')
-    def test_missing_record_requires_explicit_site_policy(self):
-        self.assertEqual(self.check(['site.test']).state,'no_hr')
+    def test_legacy_absence_policy_no_longer_grants_clearance(self):
+        self.assertEqual(self.check(['site.test']).state,'unknown')
     def test_incomplete_pagination_never_clears(self):
         self.pages['https://site.test/myhr.php?status=pending']=EMPTY+'<a href="myhr.php?page=2">下一页</a>'
         self.assertEqual(self.check(['site.test'],limit=3).state,'unknown')
@@ -92,7 +92,7 @@ class HrProviderTests(unittest.TestCase):
         self.assertFalse(hr.parse_page(page,'123')[0])
     def test_unrelated_all_navigation_is_not_an_hr_filter(self):
         self.pages['https://site.test/myhr.php'] += '<a href="https://other.test/all">全部</a>'
-        self.assertEqual(self.check(['site.test']).state,'no_hr')
+        self.assertEqual(self.check(['site.test']).state,'unknown')
         self.assertFalse(any('other.test' in url for url in self.requests))
 
 

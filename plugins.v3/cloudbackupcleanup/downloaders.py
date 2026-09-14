@@ -43,6 +43,18 @@ def detail_url(comment):
     return ''
 
 
+def canonical_source_url(value):
+    """Keep only a Nexus torrent identity, never download keys or user ids."""
+    if not isinstance(value,str) or len(value)>4096:return ''
+    try:
+        p=urllib.parse.urlparse(value or '')
+        q=urllib.parse.parse_qs(p.query);ids=q.get('id') or [];ident=ids[0] if len(ids)==1 else ''
+        p.port  # Validate malformed ports before persisting a source identity.
+        if p.scheme not in ('http','https') or not p.hostname or p.username or p.password or p.path.rsplit('/',1)[-1]!='details.php' or not ident.isdigit():return ''
+        return urllib.parse.urlunparse((p.scheme,p.netloc.lower(),p.path,'',urllib.parse.urlencode({'id':ident}),''))
+    except (ValueError,TypeError):return ''
+
+
 class Client:
     def __init__(self, name, kind, config, path_mapping=None, timeout=15, stop=None):
         self.name, self.kind, self.config = name, kind, config
